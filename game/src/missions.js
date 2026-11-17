@@ -1,127 +1,85 @@
-// Story missions: sequential objectives, a marker beacon, cash rewards.
-import * as THREE from 'three';
-import { MISSIONS, dist2d } from './config.js';
+// The story: three jobs that clear Danny Cole's $2,400 debt to the Marlin crew.
+// Each mission has steps with a map marker; reaching a marker advances the
+// step, finishing a mission pays the reward and autosaves.
+import { STORY } from './config.js';
+import { spawnGuards, guardsLeft } from './combat.js';
 
-export class Missions {
-  constructor(scene) {
-    this.scene = scene;
-    this.index = 0;          // mission 0..2, 3 = story complete
-    this.step = 0;
-    this.done = false;
-    this.targetCar = null;   // the red Comet for mission 2
-    this.marker = null;
-    this.beacon = null;
-    this.flash = 0;
-    this._buildMarker();
+export function createMissions() {
+  return {
+    index: 0, // which mission (0..2); 3 means the story is done
+    step: 0,
+    done: false,
+    marker: null, // { x, z } of the current objective, or null
+  };
+}
+
+export function currentMission(G) {
+  if (G.missions.index >= STORY.missions.length) return null;
+  return STORY.missions[G.missions.index];
+}
+
+export function currentStep(G) {
+  const m = currentMission(G);
+  if (!m) return null;
+  return m.steps[G.missions.step] || null;
+}
+
+export function refreshMarker(G) {
+  const step = currentStep(G);
+  G.missions.marker = step ? { x: step.at[0], z: step.at[1] } : null;
+  if (step) G.hud.setObjective(`${currentMission(G).name} — ${step.text}`);
+  else if (G.missions.done) G.hud.setObjective('Story complete — Solmar Bay is yours. Free roam!');
+}
+
+function completeMission(G) {
+  const m = STORY.missions[G.missions.index];
+  G.player.cash += m.reward;
+  G.audio.missionDone();
+  G.audio.pickup();
+  G.hud.say(`${m.name} complete! +$${m.reward}`);
+  G.missions.index += 1;
+  G.missions.step = 0;
+  if (G.missions.index >= STORY.missions.length) {
+    G.missions.done = true;
+    G.hud.say('Debt paid. The Marlin crew leaves Danny alone — story complete!');
   }
+  refreshMarker(G);
+  G.saveGame();
+}
 
-  _buildMarker() {
-    const g = new THREE.Group();
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(2.6, 0.22, 8, 32),
-      new THREE.MeshBasicMaterial({ color: 0xffd23e }),
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = 0.25;
-    g.add(ring);
-    const beam = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.7, 1.6, 34, 12, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xffd23e, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    beam.position.y = 17;
-    g.add(beam);
-    const light = new THREE.PointLight(0xffd23e, 60, 26);
-    light.position.y = 4;
-    g.add(light);
-    g.visible = false;
-    this.scene.add(g);
-    this.marker = g;
-    this.beacon = beam;
+function advanceStep(G) {
+  G.missions.step += 1;
+  G.audio.pickup();
+  const m = currentMission(G);
+  if (G.missions.step >= m.steps.length) completeMission(G);
+  else refreshMarker(G);
+}
+
+export function updateMissions(G) {
+  if (G.missions.done) return;
+  const step = currentStep(G);
+  if (!step) return;
+  const p = G.player;
+  const d = Math.hypot(step.at[0] - p.x, step.at[1] - p.z);
+  const m = currentMission(G);
+
+  // Mission 2, step 1: steal the Comet — completes when Danny is in that car.
+  if (step.car === 'comet') {
+    if (p.inCar && p.car && p.car.kind === 'comet') advanceStep(G);
+    return;
   }
-
-  current() {
-    if (this.index >= MISSIONS.length) return null;
-    return MISSIONS[this.index];
+  // Mission 3, step 2: the guards must all be down before the duffel counts.
+  if (G.missions.index === 2 && G.missions.step === 1) {
+    if (guardsLeft(G) === 0) advanceStep(G);
+    return;
   }
+  if (d < 12) advanceStep(G);
+}
 
-  currentStep() {
-    const m = this.current();
-    return m ? m.steps[this.step] : null;
-  }
-
-  objectiveText() {
-    if (this.done) return 'Story complete — Solmar Bay is yours, Danny.';
-    const m = this.current();
-    const s = this.currentStep();
-    if (!m || !s) return '';
-    return `${m.title}: ${s.text}`;
-  }
-
-  markerPos() {
-    const s = this.currentStep();
-    if (!s) return null;
-    if (s.type === 'escape') return null; // no fixed point while losing the heat
-    if (s.type === 'steal' && this.targetCar) return [this.targetCar.x, this.targetCar.z];
-    return s.pos;
-  }
-
-  // Returns a cash reward when a mission completes, else 0. Calls hooks for toasts.
-  update(dt, G) {
-    if (this.done) return 0;
-    const m = this.current();
-    const s = this.currentStep();
-    if (!m || !s) return 0;
-    this.flash += dt;
-    const mp = this.markerPos();
-    if (mp) {
-      this.marker.visible = true;
-      this.marker.position.set(mp[0], 0, mp[1]);
-      const sc = 1 + Math.sin(this.flash * 3) * 0.12;
-      this.marker.scale.set(sc, 1, sc);
-      this.marker.rotation.y += dt * 0.8;
-    } else {
-      this.marker.visible = false;
-    }
-
-    const px = G.player.x, pz = G.player.z;
-    let advance = false;
-    if (s.type === 'goto' || s.type === 'grab') {
-      if (dist2d(px, pz, s.pos[0], s.pos[1]) < s.r) advance = true;
-    } else if (s.type === 'steal') {
-      if (G.player.inCar && this.targetCar && G.player.car === this.targetCar) advance = true;
-    } else if (s.type === 'deliver') {
-      if (G.player.inCar && dist2d(px, pz, s.pos[0], s.pos[1]) < s.r) advance = true;
-    } else if (s.type === 'escape') {
-      if (G.police.wanted === 0) advance = true;
-    }
-    if (!advance) return 0;
-
-    if (s.type === 'grab') {
-      G.audio.pickup();
-      G.hud.toast('Case secured — now lose the heat!');
-      G.police.addHeat(250, 'heist');
-    }
-    this.step += 1;
-    G.audio.pickup();
-    if (this.step >= m.steps.length) {
-      // Mission complete.
-      this.index += 1;
-      this.step = 0;
-      G.audio.missionDone();
-      if (this.index >= MISSIONS.length) {
-        this.done = true;
-        this.marker.visible = false;
-        G.hud.toast('STORY COMPLETE — You beat Solmar Bay!');
-        return m.reward;
-      }
-      const next = MISSIONS[this.index];
-      G.hud.toast(`${m.title} complete! +$${m.reward} — ${next.title}`);
-      if (next.id === 'm2' && this.targetCar) {
-        this.targetCar.parked = true;
-      }
-      return m.reward;
-    }
-    G.hud.toast('Objective complete!');
-    return 0;
+export function startMissionGuards(G) {
+  // Called when the last mission's guard step begins.
+  if (G.missions.index === 2 && G.missions.step === 1 && G.combat.guards.length === 0) {
+    spawnGuards(G, [[252, 176], [262, 184], [244, 186]]);
+    G.hud.say('Pier guards! Deal with them.');
   }
 }

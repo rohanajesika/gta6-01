@@ -1,79 +1,69 @@
-// Keyboard + mouse input with pointer lock for camera look.
-export class Input {
-  constructor(canvas) {
-    this.keys = new Set();
-    this.mouseDX = 0;
-    this.mouseDY = 0;
-    this.mouseDown = false;
-    this.rightDown = false;
-    this.locked = false;
-    this.canvas = canvas;
-    this._onKeyDown = (e) => {
-      if (e.repeat) return;
-      this.keys.add(e.code);
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
-    };
-    this._onKeyUp = (e) => this.keys.delete(e.code);
-    this._onMouseMove = (e) => {
-      if (!this.locked) return;
-      this.mouseDX += e.movementX || 0;
-      this.mouseDY += e.movementY || 0;
-    };
-    this._onMouseDown = (e) => {
-      if (e.button === 0) this.mouseDown = true;
-      if (e.button === 2) this.rightDown = true;
-    };
-    this._onMouseUp = (e) => {
-      if (e.button === 0) this.mouseDown = false;
-      if (e.button === 2) this.rightDown = false;
-    };
-    this._onLockChange = () => { this.locked = document.pointerLockElement === canvas; };
-    this._onBlur = () => { this.keys.clear(); this.mouseDown = false; this.rightDown = false; };
-    window.addEventListener('keydown', this._onKeyDown);
-    window.addEventListener('keyup', this._onKeyUp);
-    window.addEventListener('mousemove', this._onMouseMove);
-    window.addEventListener('mousedown', this._onMouseDown);
-    window.addEventListener('mouseup', this._onMouseUp);
-    window.addEventListener('blur', this._onBlur);
-    document.addEventListener('pointerlockchange', this._onLockChange);
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+// Keyboard + mouse state, read fresh every frame. Actions are edge-triggered
+// (takeActions returns each press once); movement keys are held state.
+export const ACTION_CONFIRM = 1;
+export const ACTION_PAUSE = 2;
+export const ACTION_ENTER = 4;
+export const ACTION_SHOOT = 8;
+export const ACTION_PUNCH = 16;
+export const ACTION_RELOAD = 32;
+export const ACTION_MUTE = 64;
+
+export function createInput(canvas) {
+  const keys = new Set();
+  let actions = 0;
+  let dragX = 0;
+  let dragging = false;
+  let lastX = 0;
+
+  function press(code) {
+    if (code === 'Space' || code === 'Enter') actions |= ACTION_CONFIRM;
+    if (code === 'KeyP' || code === 'Escape') actions |= ACTION_PAUSE;
+    if (code === 'KeyE') actions |= ACTION_ENTER;
+    if (code === 'KeyF') actions |= ACTION_SHOOT;
+    if (code === 'KeyR') actions |= ACTION_RELOAD;
+    if (code === 'KeyM') actions |= ACTION_MUTE;
   }
 
-  down(code) { return this.keys.has(code); }
-  pressed(code) {
-    if (this.keys.has(code)) { this.keys.delete(code); return true; }
-    return false;
-  }
-  consumeMouse() {
-    const dx = this.mouseDX, dy = this.mouseDY;
-    this.mouseDX = 0; this.mouseDY = 0;
-    return { dx, dy };
-  }
-  requestLock() {
-    if (!this.locked && this.canvas.requestPointerLock) {
-      try {
-        // Newer browsers return a promise that rejects when lock is denied
-        // (no gesture, headless); swallow it so the console stays clean.
-        const r = this.canvas.requestPointerLock();
-        if (r && typeof r.catch === 'function') r.catch(() => {});
-      } catch { /* headless or denied */ }
-    }
-  }
-  releaseLock() {
-    if (document.pointerLockElement) {
-      try {
-        const r = document.exitPointerLock();
-        if (r && typeof r.catch === 'function') r.catch(() => {});
-      } catch { /* ignore */ }
-    }
-  }
-  axis() {
-    // WASD / arrows as -1..1 axes (x = strafe/right, y = forward)
-    let x = 0, y = 0;
-    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
-    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
-    if (this.down('KeyW') || this.down('ArrowUp')) y += 1;
-    if (this.down('KeyS') || this.down('ArrowDown')) y -= 1;
-    return { x, y };
-  }
+  window.addEventListener('keydown', (event) => {
+    if (event.repeat) return;
+    keys.add(event.code);
+    press(event.code);
+    if (['Space', 'ArrowUp', 'ArrowDown'].includes(event.code)) event.preventDefault();
+  });
+  window.addEventListener('keyup', (event) => keys.delete(event.code));
+  window.addEventListener('blur', () => keys.clear());
+
+  canvas.addEventListener('mousedown', (event) => {
+    dragging = true;
+    lastX = event.clientX;
+    if (event.button === 0) actions |= ACTION_PUNCH;
+  });
+  window.addEventListener('mouseup', () => { dragging = false; });
+  window.addEventListener('mousemove', (event) => {
+    if (!dragging) return;
+    dragX += event.clientX - lastX;
+    lastX = event.clientX;
+  });
+
+  return {
+    held(code) { return keys.has(code); },
+    axis() {
+      // -1..1 for forward and strafe, from WASD or arrows.
+      const fwd = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+      const strafe = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+      return { fwd, strafe };
+    },
+    running() { return keys.has('ShiftLeft') || keys.has('ShiftRight'); },
+    handbrake() { return keys.has('Space'); },
+    takeLook() {
+      const d = dragX;
+      dragX = 0;
+      return d;
+    },
+    takeActions() {
+      const a = actions;
+      actions = 0;
+      return a;
+    },
+  };
 }

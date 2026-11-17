@@ -1,139 +1,135 @@
-// Wanted stars and the Solmar Bay Police Department: chase, ram, bust.
-import * as THREE from 'three';
-import { WANTED, clamp, dist2d, angleLerp } from './config.js';
-import { makeCar, driveCar } from './vehicles.js';
-import { collideCircle } from './city.js';
+// Wanted level and police. Crimes raise stars (max 5); stars fade after a
+// quiet stretch. Police cars spawn on the roads, chase the player, ram the
+// player's car, and bust the player on foot when they stand close too long.
+import { WANTED, PALETTE, CITY } from './config.js';
+import { createCar } from './vehicles.js';
+import { collideCircle, clampToCity } from './city.js';
+import { damagePlayer } from './player.js';
 
-export class Police {
-  constructor(scene, colliders) {
-    this.scene = scene;
-    this.colliders = colliders;
-    this.cars = [];
-    this.heat = 0;            // 0..500, stars = ceil(heat / 100)
-    this.stars = 0;
-    this.quietTimer = 0;
-    this.bustTimer = 0;
-    this.spawnTimer = 0;
+export function createPolice(scene) {
+  return {
+    scene,
+    wanted: 0,
+    cars: [],
+    quietTimer: 0,
+    bustTimer: 0,
+    ramCooldown: 0,
+  };
+}
+
+export function addWanted(G, stars, reason) {
+  const p = G.police;
+  const before = p.wanted;
+  p.wanted = Math.min(WANTED.max, p.wanted + stars);
+  p.quietTimer = 0;
+  if (p.wanted > before) {
+    G.hud.say(reason || `Wanted level ${p.wanted}`);
+    G.audio.setSiren(true, 0);
+  }
+}
+
+function spawnCop(G) {
+  // Spawn on a road near the player (never inside a block), so the chase
+  // is never stuck behind a building from the start.
+  const p = G.player;
+  const roads = CITY.roads;
+  const nearest = (v) => roads.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
+  const sign = G.rng.next() > 0.5 ? 1 : -1;
+  let x;
+  let z;
+  if (G.rng.next() > 0.5) {
+    x = nearest(p.x);
+    z = clampToCity(p.x, p.z + sign * 55).z;
+  } else {
+    z = nearest(p.z);
+    x = clampToCity(p.x + sign * 55, p.z).x;
+  }
+  return spawnCopAt(G, x, z, Math.atan2(p.x - x, p.z - z));
+}
+
+export function spawnCopAt(G, x, z, heading) {
+  const car = createCar(G.scene, {
+    x, z, heading,
+    color: PALETTE.policeWhite, kind: 'police', speed: 12,
+  });
+  G.police.cars.push(car);
+  return car;
+}
+
+export function updatePolice(G, dt) {
+  const p = G.police;
+  p.ramCooldown = Math.max(0, p.ramCooldown - dt);
+  G.audio.setSiren(p.wanted > 0, dt);
+
+  // Wanted stars fade after a quiet stretch with no new crime.
+  if (p.wanted > 0) {
+    p.quietTimer += dt;
+    if (p.quietTimer > WANTED.decaySeconds && p.cars.length === 0) {
+      p.wanted -= 1;
+      p.quietTimer = 0;
+      G.hud.say(p.wanted === 0 ? 'You lost the cops.' : `Wanted level down to ${p.wanted}`);
+    }
   }
 
-  get wanted() { return this.stars; }
+  // Keep one cop car per star (up to 4) while wanted.
+  const wantCops = Math.min(4, p.wanted);
+  while (p.cars.length < wantCops) spawnCop(G);
 
-  addHeat(amount, reason) {
-    this.heat = clamp(this.heat + amount, 0, WANTED.maxStars * WANTED.heatPerStar);
-    this.quietTimer = 0;
-    this.stars = Math.ceil(this.heat / WANTED.heatPerStar);
-    return reason;
-  }
+  // Chase: steer toward the player, faster than traffic, ramming on contact.
+  for (const car of [...p.cars]) {
+    const dx = G.player.x - car.x;
+    const dz = G.player.z - car.z;
+    const dist = Math.hypot(dx, dz);
+    if (p.wanted === 0 && dist > 120) {
+      car.removed = true;
+      car.mesh.visible = false;
+      p.cars.splice(p.cars.indexOf(car), 1);
+      continue;
+    }
+    const want = Math.atan2(dx, dz);
+    let diff = want - car.heading;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    car.heading += Math.max(-2.2 * dt, Math.min(2.2 * dt, diff));
+    const targetSpeed = dist > 12 ? 26 : 14;
+    car.speed += (targetSpeed - car.speed) * Math.min(1, dt * 1.2);
+    const nx = car.x + Math.sin(car.heading) * car.speed * dt;
+    const nz = car.z + Math.cos(car.heading) * car.speed * dt;
+    if (!collideCircle(G.city.colliders, nx, nz, 1.6)) {
+      car.x = nx;
+      car.z = nz;
+    } else if (!collideCircle(G.city.colliders, nx, car.z, 1.6)) {
+      car.x = nx; // slide along the building face instead of stopping dead
+    } else if (!collideCircle(G.city.colliders, car.x, nz, 1.6)) {
+      car.z = nz;
+    }
+    const c = clampToCity(car.x, car.z);
+    car.x = c.x;
+    car.z = c.z;
+    car.mesh.position.set(car.x, 0, car.z);
+    car.mesh.rotation.y = car.heading;
 
-  setStars(n) {
-    this.heat = n * WANTED.heatPerStar;
-    this.stars = n;
-  }
-
-  spawnPolice(x, z) {
-    const car = makeCar(this.scene, { x, z, yaw: 0, color: 0x1a1a1a, kind: 'police' });
-    car.driver = 'police';
-    this.cars.push(car);
-    return car;
-  }
-
-  update(dt, player, onBusted) {
-    // Quiet time decays heat when no police can see the player.
-    const px = player.x, pz = player.z;
-    let nearest = Infinity;
-    for (const c of this.cars) nearest = Math.min(nearest, dist2d(c.x, c.z, px, pz));
-    if (this.stars > 0) {
-      if (nearest > 55) {
-        this.quietTimer += dt;
-        if (this.quietTimer > WANTED.decayDelay) {
-          this.heat -= (WANTED.heatPerStar / WANTED.decayStep) * dt;
-          this.stars = Math.ceil(Math.max(0, this.heat) / WANTED.heatPerStar);
-          if (this.stars <= 0) { this.heat = 0; this.stars = 0; }
+    if (dist < 4.5) {
+      if (G.player.inCar && G.player.car) {
+        // Ram: shove the player's car and slow it down.
+        if (p.ramCooldown <= 0) {
+          G.player.car.speed *= 0.55;
+          damagePlayer(G, WANTED.copRamDamage, 'busted');
+          G.audio.crash();
+          G.effects.burst(car.x, 1, car.z, 0xff5533, 8);
+          p.ramCooldown = 1.2;
         }
       } else {
-        this.quietTimer = 0;
-      }
-    }
-
-    // Keep the right number of cruisers on the street.
-    const want = this.stars === 0 ? 0 : Math.min(1 + this.stars, 5);
-    this.spawnTimer -= dt;
-    if (this.cars.length < want && this.spawnTimer <= 0) {
-      const a = Math.random() * Math.PI * 2;
-      this.spawnPolice(px + Math.sin(a) * 70, pz + Math.cos(a) * 70);
-      this.spawnTimer = 2.5;
-    }
-    if (this.cars.length > want) {
-      // Despawn the farthest cruiser when the heat drops.
-      let far = null, farD = -1;
-      for (const c of this.cars) {
-        const d = dist2d(c.x, c.z, px, pz);
-        if (d > farD) { farD = d; far = c; }
-      }
-      if (far && farD > 60) {
-        this.scene.remove(far.group);
-        this.cars.splice(this.cars.indexOf(far), 1);
-      }
-    }
-
-    // Chase: steer toward the player, ram on contact.
-    for (const car of this.cars) {
-      const d = dist2d(car.x, car.z, px, pz);
-      let steer, throttle;
-      if (car.formation) {
-        // Hold a slot beside the player (used to stage the chase shot).
-        const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
-        const rx = Math.cos(player.yaw), rz = -Math.sin(player.yaw);
-        const tx = px + fx * car.formation.along + rx * car.formation.side;
-        const tz = pz + fz * car.formation.along + rz * car.formation.side;
-        const wantYaw = Math.atan2(tx - car.x, tz - car.z);
-        const dyaw = ((wantYaw - car.yaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-        steer = clamp(dyaw * 1.4, -1, 1);
-        const targetSpeed = (player.car ? Math.abs(player.car.speed) : 0) + 1;
-        throttle = car.speed < targetSpeed ? 1 : 0.1;
-      } else {
-        const wantYaw = Math.atan2(px - car.x, pz - car.z);
-        const dyaw = ((wantYaw - car.yaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-        steer = clamp(dyaw * 1.4, -1, 1);
-        const speedTarget = (15 + this.stars * 3.2) * (car.boost || 1);
-        throttle = car.speed < speedTarget ? 1 : 0.1;
-      }
-      driveCar(car, throttle, steer, dt);
-      collideCircle(this.colliders, car, 2.2);
-      // Flash the light bar.
-      const t = performance.now() / 180;
-      const red = car.group.userData.lightRed;
-      const blue = car.group.userData.lightBlue;
-      if (red && blue) {
-        const phase = Math.sin(t) > 0;
-        red.material.color.setHex(phase ? 0xff0000 : 0x550000);
-        blue.material.color.setHex(phase ? 0x112244 : 0x2266ff);
-      }
-      // Ram the player (formation cruisers hold their slot instead).
-      if (d < 3.4 && !car.formation) {
-        if (player.inCar) {
-          player.car.speed *= 0.55;
-          player.car.x += Math.sin(car.yaw) * 1.2;
-          player.car.z += Math.cos(car.yaw) * 1.2;
-          player.car.group.position.set(player.car.x, 0, player.car.z);
-          player.crashShake = 0.5;
-        } else {
-          player.health -= 18 * dt;
-          player.crashShake = 0.5;
+        // On foot: standing next to a cop car starts the bust timer.
+        p.bustTimer += dt;
+        G.hud.say(`The police are grabbing you... ${Math.ceil(WANTED.bustSeconds - p.bustTimer)}`);
+        if (p.bustTimer >= WANTED.bustSeconds) {
+          G.endGame('busted');
+          return;
         }
-        if (player.onCrime) player.onCrime('ram', car);
-      }
-    }
-
-    // Busted: a cruiser sits on top of the player on foot.
-    if (this.stars > 0 && !player.inCar && nearest < 3.2) {
-      this.bustTimer += dt;
-      if (this.bustTimer > 1.6) {
-        this.bustTimer = 0;
-        onBusted();
       }
     } else {
-      this.bustTimer = Math.max(0, this.bustTimer - dt * 2);
+      p.bustTimer = Math.max(0, p.bustTimer - dt * 2);
     }
   }
 }

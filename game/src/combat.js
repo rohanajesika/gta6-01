@@ -1,137 +1,170 @@
-// Combat: fists and pistol, health, ammo pickups, car damage smoke.
+// Combat: the pistol (F, hitscan with a tracer), the punch (left click),
+// and the pier guards of the last mission. Guards shoot back when close.
 import * as THREE from 'three';
-import { dist2d } from './config.js';
+import { PLAYER } from './config.js';
+import { damagePlayer } from './player.js';
 
-export class Combat {
-  constructor(scene) {
-    this.scene = scene;
-    this.punchCooldown = 0;
-    this.shootCooldown = 0;
-    this.pickups = [];
-    this._buildPickups();
+export function createCombat(scene) {
+  return {
+    scene,
+    shotRecently: 0,
+    guards: [],
+    tracers: [],
+  };
+}
+
+function guardMesh() {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.42, 0.75, 4, 8), new THREE.MeshLambertMaterial({ color: 0x222831 }));
+  body.position.y = 1.15;
+  group.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), new THREE.MeshLambertMaterial({ color: 0xd9a066 }));
+  head.position.y = 2.05;
+  group.add(head);
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.12, 0.55), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+  cap.position.y = 2.28;
+  group.add(cap);
+  return group;
+}
+
+export function spawnGuards(G, positions) {
+  const combat = G.combat;
+  for (const [x, z] of positions) {
+    const mesh = guardMesh();
+    mesh.position.set(x, 0, z);
+    G.scene.add(mesh);
+    combat.guards.push({ mesh, x, z, health: 60, shootTimer: 2, alive: true });
   }
+}
 
-  _buildPickups() {
-    // Ammo crates around town: green glowing boxes.
-    const spots = [[-60, -120], [60, 120], [-180, 0], [120, 180], [0, -180], [180, -120]];
-    for (const [x, z] of spots) {
-      const box = new THREE.Mesh(
-        new THREE.BoxGeometry(1.1, 0.7, 1.1),
-        new THREE.MeshLambertMaterial({ color: 0x27ae60, emissive: 0x1a5c2e }),
-      );
-      box.position.set(x, 0.55, z);
-      this.scene.add(box);
-      this.pickups.push({ mesh: box, x, z, taken: false, respawn: 0 });
+export function guardsLeft(G) {
+  return G.combat.guards.filter((g) => g.alive).length;
+}
+
+function fireTracer(G, from, to) {
+  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.9 }));
+  G.scene.add(line);
+  G.combat.tracers.push({ line, life: 0.12 });
+}
+
+export function shoot(G) {
+  const p = G.player;
+  if (p.inCar || p.shootCooldown > 0) return;
+  if (p.ammo <= 0) {
+    G.hud.say('Out of ammo — press R to reload.');
+    G.audio.click();
+    p.shootCooldown = 0.3;
+    return;
+  }
+  p.ammo -= 1;
+  p.shootCooldown = 0.35;
+  G.combat.shotRecently = 1.5;
+  G.audio.gunshot();
+  const from = new THREE.Vector3(p.x, 1.5, p.z);
+  const dir = new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading));
+  const end = from.clone().add(dir.clone().multiplyScalar(60));
+  // Hit the nearest guard or pedestrian roughly in the line of fire.
+  let hit = null;
+  let hitD = 60;
+  const targets = [
+    ...G.combat.guards.filter((g) => g.alive).map((g) => ({ x: g.x, z: g.z, ref: g, kind: 'guard' })),
+    ...G.peds.peds.filter((pd) => pd.alive).map((pd) => ({ x: pd.x, z: pd.z, ref: pd, kind: 'ped' })),
+  ];
+  for (const t of targets) {
+    const rx = t.x - p.x;
+    const rz = t.z - p.z;
+    const along = rx * dir.x + rz * dir.z;
+    if (along < 0 || along > 60) continue;
+    const side = Math.abs(rx * dir.z - rz * dir.x);
+    if (side < 1.2 && along < hitD) { hitD = along; hit = t; }
+  }
+  if (hit) {
+    end.copy(from).add(dir.clone().multiplyScalar(hitD));
+    if (hit.kind === 'guard') {
+      hit.ref.health -= PLAYER.bulletDamage;
+      G.effects.burst(hit.ref.x, 1.4, hit.ref.z, 0xff2222, 10);
+      if (hit.ref.health <= 0) {
+        hit.ref.alive = false;
+        hit.ref.mesh.visible = false;
+        G.hud.say('Guard down.');
+        G.player.cash += 50;
+      }
+    } else {
+      hit.ref.alive = false;
+      hit.ref.mesh.visible = false;
+      G.police.addWanted(1, 'You shot a pedestrian!');
+      G.hud.say('You shot a pedestrian! Wanted level up.');
     }
   }
+  fireTracer(G, from, end);
+  G.effects.muzzle(p.x + dir.x, 1.5, p.z + dir.z);
+}
 
-  punch(G) {
-    if (this.punchCooldown > 0) return;
-    this.punchCooldown = 0.45;
-    const p = G.player;
-    G.audio.punch();
-    const fx = G.fx;
-    const px = p.x + Math.sin(p.yaw) * 1.4;
-    const pz = p.z + Math.cos(p.yaw) * 1.4;
-    fx.burst(px, 1.2, pz, 0xffe08a, 8, 3);
-    let hitAnything = false;
-    for (const ped of G.traffic.peds) {
-      if (ped.health <= 0) continue;
-      if (dist2d(ped.x, ped.z, px, pz) < 1.6) {
-        ped.health -= 34;
-        hitAnything = true;
-        fx.burst(ped.x, 1.4, ped.z, 0xff5544, 10, 4);
-        if (ped.health <= 0) {
-          ped.group.visible = false;
-          G.police.addHeat(60, 'assault');
-          G.hud.toast('You knocked out a pedestrian — the cops noticed.');
-        }
-      }
-    }
-    for (const cop of G.police.cars) {
-      if (dist2d(cop.x, cop.z, px, pz) < 2.4) {
-        cop.health -= 25;
-        hitAnything = true;
-        fx.burst(cop.x, 1.2, cop.z, 0xff5544, 10, 4);
-        G.police.addHeat(50, 'assault-cop');
-        if (cop.health <= 0) this._disableCop(G, cop);
-      }
-    }
-    if (hitAnything) p.crashShake = 0.25;
-  }
-
-  shoot(G) {
-    if (this.shootCooldown > 0 || G.player.ammo <= 0) return;
-    this.shootCooldown = 0.28;
-    const p = G.player;
-    p.ammo -= 1;
-    G.audio.shot();
-    G.fx.muzzle(p);
-    G.police.addHeat(25, 'gunfire');
-    // Hitscan: nearest ped / police car / traffic car within a cone of the aim.
-    const dx = Math.sin(p.yaw), dz = Math.cos(p.yaw);
-    let best = null, bestD = 60;
-    const consider = (x, z, obj) => {
-      const rx = x - p.x, rz = z - p.z;
-      const along = rx * dx + rz * dz;
-      const side = Math.abs(rx * dz - rz * dx);
-      if (along > 0 && along < bestD && side < 1.6) { bestD = along; best = obj; }
-    };
-    for (const ped of G.traffic.peds) if (ped.health > 0) consider(ped.x, ped.z, { kind: 'ped', obj: ped });
-    for (const cop of G.police.cars) consider(cop.x, cop.z, { kind: 'cop', obj: cop });
-    for (const car of G.traffic.cars) {
-      if (car === p.car) continue;
-      consider(car.x, car.z, { kind: 'car', obj: car });
-    }
-    const hx = p.x + dx * bestD, hz = p.z + dz * bestD;
-    G.fx.tracer(p, hx, hz);
-    if (!best) { G.fx.burst(hx, 1.0, hz, 0xcccccc, 5, 2); return; }
-    G.fx.burst(hx, 1.2, hz, 0xff5544, 12, 4);
-    if (best.kind === 'ped') {
-      best.obj.health -= 50;
-      if (best.obj.health <= 0) {
-        best.obj.group.visible = false;
-        G.police.addHeat(80, 'shooting');
-      }
-    } else if (best.kind === 'cop') {
-      best.obj.health -= 40;
-      G.police.addHeat(60, 'shooting-cop');
-      if (best.obj.health <= 0) this._disableCop(G, best.obj);
-    } else if (best.kind === 'car') {
-      best.obj.health -= 22;
-      if (best.obj.health <= 0 && !best.obj.smoke) {
-        best.obj.smoke = true;
-        G.hud.toast('That car is wrecked.');
+export function punch(G) {
+  const p = G.player;
+  if (p.inCar || p.punchCooldown > 0) return;
+  p.punchCooldown = 0.45;
+  G.audio.punch();
+  const dir = new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading));
+  for (const g of G.combat.guards) {
+    if (!g.alive) continue;
+    const d = Math.hypot(g.x - p.x, g.z - p.z);
+    if (d < PLAYER.punchRange) {
+      g.health -= PLAYER.punchDamage;
+      G.effects.burst(g.x, 1.4, g.z, 0xffdd55, 8);
+      if (g.health <= 0) {
+        g.alive = false;
+        g.mesh.visible = false;
+        G.hud.say('Guard down.');
+        G.player.cash += 50;
       }
     }
   }
-
-  _disableCop(G, cop) {
-    cop.driver = null;
-    cop.speed = 0;
-    G.scene.remove(cop.group);
-    G.police.cars.splice(G.police.cars.indexOf(cop), 1);
-    G.fx.burst(cop.x, 1.2, cop.z, 0x888888, 20, 6);
-    G.hud.toast('Police cruiser disabled!');
+  for (const pd of G.peds.peds) {
+    if (!pd.alive) continue;
+    const d = Math.hypot(pd.x - p.x, pd.z - p.z);
+    if (d < PLAYER.punchRange) {
+      pd.alive = false;
+      pd.mesh.visible = false;
+      G.police.addWanted(1, 'You attacked a pedestrian!');
+    }
   }
+}
 
-  update(dt, G) {
-    this.punchCooldown = Math.max(0, this.punchCooldown - dt);
-    this.shootCooldown = Math.max(0, this.shootCooldown - dt);
-    for (const pk of this.pickups) {
-      if (pk.taken) {
-        pk.respawn -= dt;
-        if (pk.respawn <= 0) { pk.taken = false; pk.mesh.visible = true; }
-        continue;
-      }
-      pk.mesh.rotation.y += dt * 1.5;
-      if (dist2d(G.player.x, G.player.z, pk.x, pk.z) < 1.8) {
-        pk.taken = true;
-        pk.respawn = 45;
-        pk.mesh.visible = false;
-        G.player.ammo += 24;
-        G.audio.pickup();
-        G.hud.toast('+24 ammo');
+export function reload(G) {
+  const p = G.player;
+  if (p.ammo >= 24 || p.reserveAmmo <= 0) return;
+  const need = 24 - p.ammo;
+  const take = Math.min(need, p.reserveAmmo);
+  p.ammo += take;
+  p.reserveAmmo -= take;
+  G.audio.click();
+  G.hud.say(`Reloaded. ${p.ammo} in the magazine.`);
+}
+
+export function updateCombat(G, dt) {
+  const c = G.combat;
+  c.shotRecently = Math.max(0, c.shotRecently - dt);
+  for (const t of [...c.tracers]) {
+    t.life -= dt;
+    if (t.life <= 0) {
+      G.scene.remove(t.line);
+      c.tracers.splice(c.tracers.indexOf(t), 1);
+    }
+  }
+  // Guards stand their ground on the pier and fire when the player is near.
+  for (const g of c.guards) {
+    if (!g.alive) continue;
+    const d = Math.hypot(g.x - G.player.x, g.z - G.player.z);
+    g.mesh.rotation.y = Math.atan2(G.player.x - g.x, G.player.z - g.z);
+    if (d < 26) {
+      g.shootTimer -= dt;
+      if (g.shootTimer <= 0) {
+        g.shootTimer = 1.6 + G.rng.next();
+        fireTracer(G, new THREE.Vector3(g.x, 1.5, g.z), new THREE.Vector3(G.player.x, 1.2, G.player.z));
+        G.audio.gunshot();
+        if (d < 20 && G.rng.next() < 0.55) damagePlayer(G, 8, 'wasted');
       }
     }
   }

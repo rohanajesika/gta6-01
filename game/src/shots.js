@@ -1,117 +1,96 @@
-// ?shot= staging: deterministic scenes for the four screenshots.
-// The game itself stages these; nothing here is edited or composited.
-import { driveCar } from './vehicles.js';
+// Screenshot scenes behind ?shot=chase|street|drive|mission (with &seed=N).
+// Each one poses the real game — same renderer, same rules — in a fixed
+// state, so the frame is what a short game really looks like and the same
+// seed always gives the same frame.
+import { refreshMarker } from './missions.js';
 
-export function stageShot(G, mode) {
+function putPlayerInCar(G, car, speed) {
   const p = G.player;
-  const hideStart = () => {
-    document.getElementById('start-screen').classList.add('hidden');
-    document.getElementById('hud').classList.remove('hidden');
-    G.started = true;
-    G.paused = false;
-  };
-
-  // Move street life away from the staged camera so it never photobombs the shot.
-  const clearNear = (x, z, r) => {
-    for (const car of G.traffic.cars) {
-      if (car === G.taxi || car === G.missionCar) continue;
-      if (Math.hypot(car.x - x, car.z - z) < r) {
-        car.x = 200 - Math.random() * 40;
-        car.z = -200 + Math.random() * 60;
-        car.group.position.set(car.x, 0, car.z);
-      }
-    }
-  };
-  // Move pedestrians away from a staged drive so the car does not run one over.
-  const clearPeds = (x, z, r) => {
-    for (const ped of G.traffic.peds) {
-      if (Math.hypot(ped.x - x, ped.z - z) < r) {
-        ped.x = 200 - Math.random() * 40;
-        ped.z = -200 + Math.random() * 60;
-        ped.tx = ped.x; ped.tz = ped.z;
-        ped.group.position.set(ped.x, 0, ped.z);
-      }
-    }
-  };
-  const gatherPeds = (x, z, n) => {
-    let placed = 0;
-    for (const ped of G.traffic.peds) {
-      if (placed >= n) break;
-      ped.x = x + (placed - n / 2) * 4 + Math.random() * 2;
-      ped.z = z + 6 + Math.random() * 6;
-      ped.tx = ped.x; ped.tz = ped.z;
-      ped.group.position.set(ped.x, 0, ped.z);
-      placed++;
-    }
-  };
-
-  if (mode === 'chase') {
-    // Cover: police chase with 3 wanted stars, a mission objective on the HUD.
-    hideStart();
-    G.missions.index = 2; G.missions.step = 1; // Harbor Lights: escape the heat
-    const car = G.missionCar;
-    p.enterCar(car);
-    G.police.setStars(3);
-    car.x = -40; car.z = 60; car.yaw = Math.PI / 2; car.speed = 26;
-    car.group.position.set(car.x, 0, car.z);
-    p.camYaw = Math.PI / 2;
-    G.autoDrive = true;
-    G.shotCamBack = 8;
-    clearNear(car.x, car.z, 70);
-    clearPeds(car.x, car.z, 70);
-    // Cruisers hold formation slots beside the player so the chase reads on camera.
-    for (const side of [4.5, -4.5]) {
-      const cop = G.police.spawnPolice(car.x + 2, 60 - side);
-      cop.speed = 30;
-      cop.yaw = Math.PI / 2;
-      cop.formation = { along: 2, side };
-    }
-    G.audio.sirenSet(true);
-  } else if (mode === 'street') {
-    // On foot in the city, pedestrians and traffic around.
-    hideStart();
-    p.x = -20; p.z = 0; p.yaw = Math.PI / 2; p.camYaw = p.yaw;
-    p.mesh.position.set(p.x, 0, p.z);
-    p.mesh.rotation.y = p.yaw;
-    G.missions.index = 0; G.missions.step = 0;
-    gatherPeds(-14, 0, 5);
-    clearNear(p.x, p.z, 30);
-  } else if (mode === 'drive') {
-    // Cruising down the boulevard in a yellow cab.
-    hideStart();
-    const car = G.taxi;
-    p.enterCar(car);
-    car.x = -120; car.z = 0; car.yaw = Math.PI / 2; car.speed = 24;
-    car.group.position.set(car.x, 0, car.z);
-    p.camYaw = Math.PI / 2;
-    G.autoDrive = true;
-    G.shotCamBack = 8;
-    clearNear(car.x, car.z, 45);
-    clearPeds(-60, 0, 70);
-    G.missions.index = 0; G.missions.step = 1;
-  } else if (mode === 'mission') {
-    // Mission 3 at the Harbor Pier: the case, the beacon, the ocean.
-    hideStart();
-    G.missions.index = 2; G.missions.step = 0;
-    p.x = 170; p.z = 222; p.yaw = Math.PI; p.camYaw = 0;
-    p.mesh.position.set(p.x, 0, p.z);
-    p.mesh.rotation.y = p.yaw;
-    G.police.setStars(2);
-    const cop = G.police.spawnPolice(120, 150);
-    cop.speed = 10;
-    clearNear(p.x, p.z, 30);
-  }
-  // Let the scene settle, then signal the screenshot driver.
-  G.shotFrames = 0;
-  G.shotReadyAfter = 50;
+  p.inCar = true;
+  p.car = car;
+  car.parked = false;
+  car.speed = speed;
+  p.mesh.visible = false;
+  p.x = car.x;
+  p.z = car.z;
+  p.heading = car.heading;
 }
 
-export function shotTick(G) {
-  if (G.shotReadyAfter === undefined) return;
-  G.shotFrames += 1;
-  if (G.shotFrames >= G.shotReadyAfter && !window.__shotReady) {
-    // One extra beat so the HUD paints before the capture.
-    requestAnimationFrame(() => { window.__shotReady = true; });
-    G.shotReadyAfter = undefined;
+export function stageShot(name, G) {
+  const p = G.player;
+  G.screen = 'play';
+  G.started = true;
+  document.getElementById('start-screen').classList.add('hidden');
+  document.getElementById('hud').classList.remove('hidden');
+
+  if (name === 'chase') {
+    // Police chase while driving: wanted 3, two cop cars closing in, the
+    // mission objective and the minimap visible on the HUD. Everything sits
+    // on the road x=0 so the chase camera has a clear view.
+    const taxi = G.traffic.taxi;
+    taxi.x = 0; taxi.z = 40; taxi.heading = 0;
+    taxi.mesh.position.set(taxi.x, 0, taxi.z);
+    taxi.mesh.rotation.y = taxi.heading;
+    putPlayerInCar(G, taxi, 24);
+    p.camYaw = taxi.heading + Math.PI;
+    G.camYaw = p.camYaw;
+    G.police.wanted = 3;
+    G.police.quietTimer = 0;
+    G.missions.index = 0;
+    G.missions.step = 1;
+    refreshMarker(G);
+    const cops = [
+      G.police.spawnCopAt(G, taxi.x - 4, taxi.z + 20, 0),
+      G.police.spawnCopAt(G, taxi.x + 3, taxi.z - 18, 0),
+    ];
+    for (const c of cops) { c.speed = 22; c.mesh.position.set(c.x, 0, c.z); c.mesh.rotation.y = c.heading; }
+    G.hud.say('Wanted level 3 — lose the cops!');
+  } else if (name === 'drive') {
+    // Cruising down Coral Row in the taxi.
+    const taxi = G.traffic.taxi;
+    taxi.x = 60; taxi.z = -40; taxi.heading = Math.PI;
+    taxi.mesh.position.set(taxi.x, 0, taxi.z);
+    taxi.mesh.rotation.y = taxi.heading;
+    putPlayerInCar(G, taxi, 18);
+    p.camYaw = taxi.heading + Math.PI;
+    G.camYaw = p.camYaw;
+    G.missions.index = 0;
+    G.missions.step = 0;
+    refreshMarker(G);
+  } else if (name === 'mission') {
+    // On foot on the road by the Marina Kiosk, looking at the kiosk and the
+    // mission beacon. Standing just outside the 12 m pickup radius so the
+    // scene stays on step 0 instead of advancing while the world settles.
+    p.x = -156; p.z = -180;
+    p.heading = -Math.PI / 4;
+    p.mesh.position.set(p.x, 0, p.z);
+    p.mesh.rotation.y = p.heading;
+    p.camYaw = p.heading + Math.PI;
+    G.camYaw = p.camYaw;
+    G.missions.index = 0;
+    G.missions.step = 0;
+    refreshMarker(G);
+    G.hud.say('Pick up the package at the Marina Kiosk.');
+  } else {
+    // street: on foot at a busy downtown intersection, traffic and
+    // pedestrians around.
+    p.x = 4; p.z = 6;
+    p.heading = 0.4;
+    p.mesh.position.set(p.x, 0, p.z);
+    p.mesh.rotation.y = p.heading;
+    p.camYaw = 0.4 + Math.PI;
+    G.camYaw = p.camYaw;
+    G.missions.index = 0;
+    G.missions.step = 0;
+    refreshMarker(G);
   }
+  // Let the world settle for a few frames so traffic and peds spread out.
+  for (let i = 0; i < 30; i += 1) {
+    G.stepWorld(1 / 60, true);
+  }
+  // The settle steps coast the cars down; put the staged speeds back so the
+  // chase and drive shots show motion.
+  if (name === 'chase' && p.inCar && p.car) p.car.speed = 24;
+  if (name === 'drive' && p.inCar && p.car) p.car.speed = 18;
+  return { screen: 'play' };
 }
