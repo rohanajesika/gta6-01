@@ -1,171 +1,112 @@
-// Combat: the pistol (F, hitscan with a tracer), the punch (left click),
-// and the pier guards of the last mission. Guards shoot back when close.
+// Combat. One job: the pistol — fire, tracer, hit, and the consequences.
+// Shooting is hitscan from the camera through the crosshair.
 import * as THREE from 'three';
-import { PLAYER } from './config.js';
-import { damagePlayer } from './player.js';
+import { CONFIG } from './config.js';
 
-export function createCombat(scene) {
-  return {
-    scene,
-    shotRecently: 0,
-    guards: [],
-    tracers: [],
-  };
-}
+export function createCombat(G) {
+  let cooldown = 0;
+  let lastWantedShotAt = -99;
+  const tracerMat = new THREE.MeshBasicMaterial({ color: 0xffe9a8 });
+  const tracerGeo = new THREE.BoxGeometry(0.06, 0.06, 1);
+  const tracers = [];
 
-function guardMesh() {
-  const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.42, 0.75, 4, 8), new THREE.MeshLambertMaterial({ color: 0x222831 }));
-  body.position.y = 1.15;
-  group.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), new THREE.MeshLambertMaterial({ color: 0xd9a066 }));
-  head.position.y = 2.05;
-  group.add(head);
-  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.12, 0.55), new THREE.MeshLambertMaterial({ color: 0x111111 }));
-  cap.position.y = 2.28;
-  group.add(cap);
-  return group;
-}
-
-export function spawnGuards(G, positions) {
-  const combat = G.combat;
-  for (const [x, z] of positions) {
-    const mesh = guardMesh();
-    mesh.position.set(x, 0, z);
-    G.scene.add(mesh);
-    combat.guards.push({ mesh, x, z, health: 60, shootTimer: 2, alive: true });
+  function muzzleWorldPos() {
+    const p = G.player;
+    return new THREE.Vector3(
+      p.x + Math.sin(p.heading) * 0.8,
+      1.4,
+      p.z + Math.cos(p.heading) * 0.8,
+    );
   }
-}
 
-export function guardsLeft(G) {
-  return G.combat.guards.filter((g) => g.alive).length;
-}
+  function shoot() {
+    if (G.player.inCar) return;
+    if (cooldown > 0) return;
+    if (G.player.ammo <= 0) {
+      G.hud.toast('Out of ammo — finish a mission to restock');
+      G.audio.click();
+      return;
+    }
+    cooldown = CONFIG.player.shootCooldown;
+    G.player.ammo -= 1;
+    G.audio.shot();
+    G.effects.muzzle(muzzleWorldPos(), G.player.heading);
 
-function fireTracer(G, from, to) {
-  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.9 }));
-  G.scene.add(line);
-  G.combat.tracers.push({ line, life: 0.12 });
-}
+    // Aim from the camera through the centre of the screen.
+    const origin = new THREE.Vector3();
+    G.camera.getWorldPosition(origin);
+    const dir = new THREE.Vector3();
+    G.camera.getWorldDirection(dir);
+    const range = CONFIG.player.shootRange;
 
-export function shoot(G) {
-  const p = G.player;
-  if (p.inCar || p.shootCooldown > 0) return;
-  if (p.ammo <= 0) {
-    G.hud.say('Out of ammo — press R to reload.');
-    G.audio.click();
-    p.shootCooldown = 0.3;
-    return;
-  }
-  p.ammo -= 1;
-  p.shootCooldown = 0.35;
-  G.combat.shotRecently = 1.5;
-  G.audio.gunshot();
-  const from = new THREE.Vector3(p.x, 1.5, p.z);
-  const dir = new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading));
-  const end = from.clone().add(dir.clone().multiplyScalar(60));
-  // Hit the nearest guard or pedestrian roughly in the line of fire.
-  let hit = null;
-  let hitD = 60;
-  const targets = [
-    ...G.combat.guards.filter((g) => g.alive).map((g) => ({ x: g.x, z: g.z, ref: g, kind: 'guard' })),
-    ...G.peds.peds.filter((pd) => pd.alive).map((pd) => ({ x: pd.x, z: pd.z, ref: pd, kind: 'ped' })),
-  ];
-  for (const t of targets) {
-    const rx = t.x - p.x;
-    const rz = t.z - p.z;
-    const along = rx * dir.x + rz * dir.z;
-    if (along < 0 || along > 60) continue;
-    const side = Math.abs(rx * dir.z - rz * dir.x);
-    if (side < 1.2 && along < hitD) { hitD = along; hit = t; }
-  }
-  if (hit) {
-    end.copy(from).add(dir.clone().multiplyScalar(hitD));
-    if (hit.kind === 'guard') {
-      hit.ref.health -= PLAYER.bulletDamage;
-      G.effects.burst(hit.ref.x, 1.4, hit.ref.z, 0xff2222, 10);
-      if (hit.ref.health <= 0) {
-        hit.ref.alive = false;
-        hit.ref.mesh.visible = false;
-        G.hud.say('Guard down.');
-        G.player.cash += 50;
-      }
+    // Find the closest thing the shot can hit: a pedestrian, a cop car,
+    // a traffic car, or a building (which just eats the bullet).
+    let bestT = range;
+    let bestKind = null;
+    let bestTarget = null;
+    const ray = new THREE.Ray(origin, dir);
+    const hitPoint = new THREE.Vector3();
+    function testSphere(cx, cy, cz, r, kind, target) {
+      const c = new THREE.Vector3(cx, cy, cz);
+      const t = ray.distanceToPoint(c);
+      if (t < 0 || t > bestT) return;
+      // Perpendicular distance from the ray to the centre.
+      const closest = new THREE.Vector3().copy(dir).multiplyScalar(t).add(origin);
+      if (closest.distanceTo(c) > r + 0.4) return;
+      bestT = t;
+      bestKind = kind;
+      bestTarget = target;
+      hitPoint.copy(closest);
+    }
+    for (const ped of G.traffic.peds) {
+      if (ped.alive) testSphere(ped.x, 1.1, ped.z, 0.7, 'ped', ped);
+    }
+    for (const car of G.police.cars) testSphere(car.x, 1.0, car.z, 2.2, 'cop', car);
+    for (const car of G.traffic.cars) {
+      if (car.parked || car === G.player.car) continue;
+      testSphere(car.x, 1.0, car.z, 2.2, 'car', car);
+    }
+    const end = new THREE.Vector3().copy(dir).multiplyScalar(bestT).add(origin);
+    const tracer = new THREE.Mesh(tracerGeo, tracerMat);
+    const mid = new THREE.Vector3().addVectors(origin, end).multiplyScalar(0.5);
+    tracer.position.copy(mid);
+    tracer.lookAt(end);
+    tracer.scale.z = Math.max(0.1, bestT);
+    G.scene.add(tracer);
+    tracers.push({ mesh: tracer, life: 0.09 });
+
+    if (bestKind === 'ped') {
+      const ped = bestTarget;
+      ped.alive = false;
+      ped.mesh.rotation.x = -Math.PI / 2;
+      ped.mesh.position.y = 0.5;
+      G.effects.burst(ped.x, 0.8, ped.z, 0xd84a4a, 12);
+      G.police.addWanted(1, 'shot a pedestrian');
+    } else if (bestKind === 'cop') {
+      G.effects.burst(bestTarget.x, 1.2, bestTarget.z, 0xffd23e, 10);
+      G.police.addWanted(1, 'shot at police');
+    } else if (bestKind === 'car') {
+      G.effects.burst(bestTarget.x, 1.0, bestTarget.z, 0x9aa0a8, 8);
     } else {
-      hit.ref.alive = false;
-      hit.ref.mesh.visible = false;
-      G.police.addWanted(1, 'You shot a pedestrian!');
-      G.hud.say('You shot a pedestrian! Wanted level up.');
-    }
-  }
-  fireTracer(G, from, end);
-  G.effects.muzzle(p.x + dir.x, 1.5, p.z + dir.z);
-}
-
-export function punch(G) {
-  const p = G.player;
-  if (p.inCar || p.punchCooldown > 0) return;
-  p.punchCooldown = 0.45;
-  G.audio.punch();
-  const dir = new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading));
-  for (const g of G.combat.guards) {
-    if (!g.alive) continue;
-    const d = Math.hypot(g.x - p.x, g.z - p.z);
-    if (d < PLAYER.punchRange) {
-      g.health -= PLAYER.punchDamage;
-      G.effects.burst(g.x, 1.4, g.z, 0xffdd55, 8);
-      if (g.health <= 0) {
-        g.alive = false;
-        g.mesh.visible = false;
-        G.hud.say('Guard down.');
-        G.player.cash += 50;
+      // A miss still draws the heat if the cops hear it recently enough.
+      if (G.time - lastWantedShotAt > 10) {
+        lastWantedShotAt = G.time;
+        if (G.police.wanted > 0) G.police.addWanted(1, 'shots fired');
       }
     }
   }
-  for (const pd of G.peds.peds) {
-    if (!pd.alive) continue;
-    const d = Math.hypot(pd.x - p.x, pd.z - p.z);
-    if (d < PLAYER.punchRange) {
-      pd.alive = false;
-      pd.mesh.visible = false;
-      G.police.addWanted(1, 'You attacked a pedestrian!');
-    }
-  }
-}
 
-export function reload(G) {
-  const p = G.player;
-  if (p.ammo >= 24 || p.reserveAmmo <= 0) return;
-  const need = 24 - p.ammo;
-  const take = Math.min(need, p.reserveAmmo);
-  p.ammo += take;
-  p.reserveAmmo -= take;
-  G.audio.click();
-  G.hud.say(`Reloaded. ${p.ammo} in the magazine.`);
-}
-
-export function updateCombat(G, dt) {
-  const c = G.combat;
-  c.shotRecently = Math.max(0, c.shotRecently - dt);
-  for (const t of [...c.tracers]) {
-    t.life -= dt;
-    if (t.life <= 0) {
-      G.scene.remove(t.line);
-      c.tracers.splice(c.tracers.indexOf(t), 1);
-    }
-  }
-  // Guards stand their ground on the pier and fire when the player is near.
-  for (const g of c.guards) {
-    if (!g.alive) continue;
-    const d = Math.hypot(g.x - G.player.x, g.z - G.player.z);
-    g.mesh.rotation.y = Math.atan2(G.player.x - g.x, G.player.z - g.z);
-    if (d < 26) {
-      g.shootTimer -= dt;
-      if (g.shootTimer <= 0) {
-        g.shootTimer = 1.6 + G.rng.next();
-        fireTracer(G, new THREE.Vector3(g.x, 1.5, g.z), new THREE.Vector3(G.player.x, 1.2, G.player.z));
-        G.audio.gunshot();
-        if (d < 20 && G.rng.next() < 0.55) damagePlayer(G, 8, 'wasted');
+  function update(dt) {
+    if (cooldown > 0) cooldown -= dt;
+    for (let i = tracers.length - 1; i >= 0; i--) {
+      const t = tracers[i];
+      t.life -= dt;
+      if (t.life <= 0) {
+        G.scene.remove(t.mesh);
+        tracers.splice(i, 1);
       }
     }
   }
+
+  return { shoot, update };
 }

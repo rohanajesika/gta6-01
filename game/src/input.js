@@ -1,69 +1,106 @@
-// Keyboard + mouse state, read fresh every frame. Actions are edge-triggered
-// (takeActions returns each press once); movement keys are held state.
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
-export const ACTION_ENTER = 4;
-export const ACTION_SHOOT = 8;
-export const ACTION_PUNCH = 16;
-export const ACTION_RELOAD = 32;
-export const ACTION_MUTE = 64;
+// Keyboard + mouse input. One job: turn raw DOM events into a stable,
+// queryable state (held keys, edge-triggered presses, camera drag).
 
 export function createInput(canvas) {
   const keys = new Set();
-  let actions = 0;
-  let dragX = 0;
-  let dragging = false;
-  let lastX = 0;
+  const pressedQueue = new Set();
+  const drag = { active: false, dx: 0, dy: 0, lastX: 0, lastY: 0 };
+  let locked = false;
 
-  function press(code) {
-    if (code === 'Space' || code === 'Enter') actions |= ACTION_CONFIRM;
-    if (code === 'KeyP' || code === 'Escape') actions |= ACTION_PAUSE;
-    if (code === 'KeyE') actions |= ACTION_ENTER;
-    if (code === 'KeyF') actions |= ACTION_SHOOT;
-    if (code === 'KeyR') actions |= ACTION_RELOAD;
-    if (code === 'KeyM') actions |= ACTION_MUTE;
+  function onKeyDown(e) {
+    if (e.repeat) return;
+    keys.add(e.code);
+    pressedQueue.add(e.code);
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+      e.preventDefault();
+    }
+  }
+  function onKeyUp(e) {
+    keys.delete(e.code);
+  }
+  function onMouseDown(e) {
+    if (e.target !== canvas) return;
+    drag.active = true;
+    drag.lastX = e.clientX;
+    drag.lastY = e.clientY;
+    // Pointer lock gives smooth mouse-look; the drag fallback covers
+    // browsers and headless runs where lock is unavailable.
+    if (canvas.requestPointerLock) {
+      try {
+        const p = canvas.requestPointerLock();
+        if (p && p.catch) p.catch(() => {});
+      } catch {
+        /* pointer lock unavailable — drag still works */
+      }
+    }
+  }
+  function onMouseUp() {
+    drag.active = false;
+  }
+  function onMouseMove(e) {
+    if (document.pointerLockElement === canvas) {
+      drag.dx += e.movementX;
+      drag.dy += e.movementY;
+      return;
+    }
+    if (!drag.active) return;
+    drag.dx += e.clientX - drag.lastX;
+    drag.dy += e.clientY - drag.lastY;
+    drag.lastX = e.clientX;
+    drag.lastY = e.clientY;
+  }
+  function onLockChange() {
+    locked = document.pointerLockElement === canvas;
+  }
+  function onBlur() {
+    keys.clear();
+    drag.active = false;
   }
 
-  window.addEventListener('keydown', (event) => {
-    if (event.repeat) return;
-    keys.add(event.code);
-    press(event.code);
-    if (['Space', 'ArrowUp', 'ArrowDown'].includes(event.code)) event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => keys.delete(event.code));
-  window.addEventListener('blur', () => keys.clear());
-
-  canvas.addEventListener('mousedown', (event) => {
-    dragging = true;
-    lastX = event.clientX;
-    if (event.button === 0) actions |= ACTION_PUNCH;
-  });
-  window.addEventListener('mouseup', () => { dragging = false; });
-  window.addEventListener('mousemove', (event) => {
-    if (!dragging) return;
-    dragX += event.clientX - lastX;
-    lastX = event.clientX;
-  });
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
+  canvas.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mouseup', onMouseUp);
+  window.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('pointerlockchange', onLockChange);
 
   return {
-    held(code) { return keys.has(code); },
-    axis() {
-      // -1..1 for forward and strafe, from WASD or arrows.
-      const fwd = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-      const strafe = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-      return { fwd, strafe };
+    keys,
+    // Held this frame?
+    held(code) {
+      return keys.has(code);
     },
-    running() { return keys.has('ShiftLeft') || keys.has('ShiftRight'); },
-    handbrake() { return keys.has('Space'); },
-    takeLook() {
-      const d = dragX;
-      dragX = 0;
-      return d;
+    // Pressed since the last frame (edge-triggered)? Consumed on read.
+    pressed(code) {
+      if (!pressedQueue.has(code)) return false;
+      pressedQueue.delete(code);
+      return true;
     },
-    takeActions() {
-      const a = actions;
-      actions = 0;
-      return a;
+    // Camera orbit delta accumulated since last frame, in pixels.
+    takeDrag() {
+      const out = { dx: drag.dx, dy: drag.dy };
+      drag.dx = 0;
+      drag.dy = 0;
+      return out;
+    },
+    get pointerLocked() {
+      return locked;
+    },
+    // Movement intent in camera space: x = strafe right, y = forward.
+    moveVector() {
+      let x = 0;
+      let y = 0;
+      if (keys.has('KeyW') || keys.has('ArrowUp')) y += 1;
+      if (keys.has('KeyS') || keys.has('ArrowDown')) y -= 1;
+      if (keys.has('KeyA') || keys.has('ArrowLeft')) x -= 1;
+      if (keys.has('KeyD') || keys.has('ArrowRight')) x += 1;
+      return { x, y };
+    },
+    // Drain the press queue at the end of a frame so a press is never
+    // acted on twice.
+    endFrame() {
+      pressedQueue.clear();
     },
   };
 }

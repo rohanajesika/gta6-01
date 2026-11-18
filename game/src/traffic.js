@@ -1,165 +1,186 @@
-// Traffic and pedestrians. Cars loop around the road grid on waypoint routes
-// (right-hand side, one lane each way); pedestrians stroll the sidewalks and
-// scatter when a car or a gunshot comes too close.
+// Traffic and pedestrians. One job: fill the streets with life — cars
+// cruising the road grid, parked cars to steal, and people on the sidewalks.
 import * as THREE from 'three';
-import { CITY, PALETTE, TRAFFIC_COUNT, PED_COUNT } from './config.js';
-import { createCar, driveCar } from './vehicles.js';
-import { collideCircle, clampToCity } from './city.js';
+import { CONFIG } from './config.js';
+import { makeCar, syncCarMesh } from './vehicles.js';
 
-function roadRoute(rng) {
-  // A rectangular loop around two adjacent roads.
-  const a = rng.pick(CITY.roads);
-  const b = rng.pick(CITY.roads);
-  const c = rng.pick(CITY.roads);
-  const d = rng.pick(CITY.roads);
-  return [
-    [a, -200], [a, 200], [b, 200], [b, -200],
-    [c, -200], [c, 200], [d, 200], [d, -200],
-  ];
+const TAXI_SPOT = { x: -6, z: 9, heading: 0 };
+
+function makePedestrianMesh(rng) {
+  const g = new THREE.Group();
+  const shirt = new THREE.MeshStandardMaterial({
+    color: [0xd84a4a, 0x4a7ad8, 0x4ad87b, 0xd8c84a, 0x8a4ad8, 0xe8e8e8][rng.int(0, 5)],
+    roughness: 0.9,
+  });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.9, 0.32), shirt);
+  body.position.y = 1.05;
+  body.castShadow = true;
+  g.add(body);
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 8, 6),
+    new THREE.MeshStandardMaterial({ color: 0xd8a077, roughness: 0.8 }),
+  );
+  head.position.y = 1.72;
+  head.castShadow = true;
+  g.add(head);
+  const legMat = new THREE.MeshStandardMaterial({ color: 0x2c343c, roughness: 1 });
+  for (const x of [-0.14, 0.14]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.6, 0.22), legMat);
+    leg.position.set(x, 0.3, 0);
+    g.add(leg);
+  }
+  return g;
 }
 
-export function createTraffic(scene, rng) {
+export function createTraffic(G) {
+  const rng = G.rng;
   const cars = [];
-  for (let i = 0; i < TRAFFIC_COUNT; i += 1) {
-    const road = rng.pick(CITY.roads);
-    const along = rng.range(-200, 200);
-    const vertical = rng.next() > 0.5;
-    const car = createCar(scene, {
-      x: vertical ? road : along,
-      z: vertical ? along : road,
-      heading: vertical ? (rng.next() > 0.5 ? 0 : Math.PI) : (rng.next() > 0.5 ? Math.PI / 2 : -Math.PI / 2),
-      color: rng.pick(PALETTE.carPaint),
-      kind: 'traffic',
-      speed: rng.range(6, 11),
-    });
-    car.route = roadRoute(rng);
-    cars.push(car);
-  }
-  // Parked cars: the yellow taxi by the start, the red Comet, and a few more.
-  const taxi = createCar(scene, { x: -6, z: 0, heading: Math.PI / 2, color: PALETTE.taxiYellow, kind: 'taxi', parked: true });
-  cars.push(taxi);
-  const comet = createCar(scene, { x: 120, z: -57, heading: Math.PI, color: PALETTE.cometRed, kind: 'comet', parked: true });
-  cars.push(comet);
-  for (const [x, z, h] of [[30, 63, 0], [-90, -57, Math.PI / 2], [60, -123, 0], [-150, 3, Math.PI / 2], [180, 93, Math.PI]]) {
-    cars.push(createCar(scene, { x, z, heading: h, color: rng.pick(PALETTE.carPaint), kind: 'traffic', parked: true }));
-  }
-  return { cars, taxi, comet };
-}
-
-function pedMesh(shirt) {
-  const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.6, 4, 8), new THREE.MeshLambertMaterial({ color: shirt }));
-  body.position.y = 1.0;
-  group.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), new THREE.MeshLambertMaterial({ color: 0xe8b98a }));
-  head.position.y = 1.75;
-  group.add(head);
-  return group;
-}
-
-export function createPedestrians(scene, rng) {
   const peds = [];
-  for (let i = 0; i < PED_COUNT; i += 1) {
-    const mesh = pedMesh(rng.pick(PALETTE.pedShirts));
-    const x = rng.pick(CITY.roads) + rng.range(-14, 14);
-    const z = rng.range(-190, 190);
-    mesh.position.set(x, 0, z);
-    scene.add(mesh);
-    peds.push({ mesh, x, z, heading: rng.range(0, Math.PI * 2), speed: rng.range(1, 2.2), panic: 0, alive: true });
-  }
-  return { peds };
-}
+  const group = new THREE.Group();
+  group.name = 'traffic';
+  G.scene.add(group);
 
-export function updateTraffic(G, dt) {
-  const { cars } = G.traffic;
-  for (const car of cars) {
-    if (car.removed || car.parked) continue;
-    if (G.player.inCar && G.player.car === car) continue; // player drives this one
-    if (G.police.cars.includes(car)) continue; // police module drives its own
-    // A stolen parked car has no route yet: give it one so it joins traffic.
-    if (!car.route) car.route = roadRoute(G.rng);
-    // Follow the route: steer toward the next waypoint.
-    const wp = car.route[car.waypoint];
-    const dx = wp[0] - car.x;
-    const dz = wp[1] - car.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist < 6) {
-      car.waypoint = (car.waypoint + 1) % car.route.length;
-      continue;
-    }
-    const want = Math.atan2(dx, dz);
-    let diff = want - car.heading;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    // Slow down for a car stopped ahead.
-    let blocked = false;
-    for (const other of cars) {
-      if (other === car || other.removed) continue;
-      const ox = other.x - car.x;
-      const oz = other.z - car.z;
-      const ahead = ox * Math.sin(car.heading) + oz * Math.cos(car.heading);
-      const side = Math.abs(ox * Math.cos(car.heading) - oz * Math.sin(car.heading));
-      if (ahead > 0 && ahead < 9 && side < 2.4) { blocked = true; break; }
-    }
-    const targetSpeed = blocked ? 0 : 9;
-    car.speed += (targetSpeed - car.speed) * Math.min(1, dt * 1.5);
-    car.heading += Math.max(-1.4 * dt, Math.min(1.4 * dt, diff));
-    const nx = car.x + Math.sin(car.heading) * car.speed * dt;
-    const nz = car.z + Math.cos(car.heading) * car.speed * dt;
-    if (!collideCircle(G.city.colliders, nx, nz, 1.6)) {
-      car.x = nx;
-      car.z = nz;
-    } else {
-      car.waypoint = (car.waypoint + 1) % car.route.length;
-    }
-    const c = clampToCity(car.x, car.z);
-    car.x = c.x;
-    car.z = c.z;
-    car.mesh.position.set(car.x, 0, car.z);
-    car.mesh.rotation.y = car.heading;
-    for (const wheel of car.wheels) wheel.rotation.x += car.speed * dt * 2.4;
-  }
-}
+  // The taxi: parked on the plaza edge, facing south down the service
+  // alley, so a new player can steal it and drive a clear lane.
+  const taxi = makeCar({
+    x: TAXI_SPOT.x, z: TAXI_SPOT.z, heading: TAXI_SPOT.heading,
+    parked: true, color: 0xe8c832, colorIndex: 2,
+  });
+  taxi.isTaxi = true;
+  cars.push(taxi);
+  group.add(taxi.mesh);
+  syncCarMesh(taxi);
 
-export function updatePedestrians(G, dt) {
-  for (const ped of G.peds.peds) {
-    if (!ped.alive) continue;
-    // Panic: run away from the player when a shot was fired or a car is close.
-    const pd = Math.hypot(ped.x - G.player.x, ped.z - G.player.z);
-    if (pd < 12 && (G.combat.shotRecently > 0 || (G.player.inCar && Math.abs(G.player.car?.speed || 0) > 8))) {
-      ped.panic = 2;
-    }
-    ped.panic = Math.max(0, ped.panic - dt);
-    const speed = ped.panic > 0 ? 5 : ped.speed;
-    if (ped.panic > 0) {
-      ped.heading = Math.atan2(ped.x - G.player.x, ped.z - G.player.z);
-    } else if (G.rng.next() < dt * 0.08) {
-      ped.heading += G.rng.range(-1.2, 1.2);
-    }
-    const nx = ped.x + Math.sin(ped.heading) * speed * dt;
-    const nz = ped.z + Math.cos(ped.heading) * speed * dt;
-    if (!collideCircle(G.city.colliders, nx, nz, 0.6)) {
-      ped.x = nx;
-      ped.z = nz;
-    } else {
-      ped.heading += Math.PI / 2;
-    }
-    const c = clampToCity(ped.x, ped.z);
-    ped.x = c.x;
-    ped.z = c.z;
-    ped.mesh.position.set(ped.x, Math.abs(Math.sin(G.time * 8 + ped.x)) * 0.05, ped.z);
-    ped.mesh.rotation.y = ped.heading;
-    // A fast car hitting a pedestrian is a crime — and the pedestrian goes down.
-    if (G.player.inCar && G.player.car) {
-      const cd = Math.hypot(ped.x - G.player.car.x, ped.z - G.player.car.z);
-      if (cd < 1.8 && Math.abs(G.player.car.speed) > 6) {
-        ped.alive = false;
-        ped.mesh.visible = false;
-        G.police.addWanted(1, 'You hit a pedestrian!');
-        G.hud.say('You hit a pedestrian! Wanted level up.');
-        G.audio.crash();
-        G.player.car.speed *= 0.6;
+  // Other parked cars along road shoulders, well away from the taxi.
+  const parkedSpots = [
+    { x: -28, z: -60, heading: Math.PI / 2 }, { x: 28, z: -100, heading: -Math.PI / 2 },
+    { x: -68, z: 60, heading: Math.PI / 2 }, { x: 68, z: -40, heading: -Math.PI / 2 },
+    { x: -108, z: 100, heading: Math.PI / 2 }, { x: 108, z: 140, heading: -Math.PI / 2 },
+    { x: -148, z: -120, heading: Math.PI / 2 }, { x: 148, z: 20, heading: -Math.PI / 2 },
+    { x: 60, z: 148, heading: 0 }, { x: -60, z: -148, heading: Math.PI },
+  ];
+  parkedSpots.forEach((s, i) => {
+    const car = makeCar({
+      x: s.x, z: s.z, heading: s.heading, parked: true, colorIndex: (i + 3) % 10,
+    });
+    cars.push(car);
+    group.add(car.mesh);
+    syncCarMesh(car);
+  });
+
+  // Moving cars: each picks a road line and a direction and cruises it,
+  // turning at intersections sometimes. Lane offset keeps them right.
+  for (let i = 0; i < CONFIG.traffic.movingCars; i++) {
+    const vertical = rng.chance(0.5);
+    const road = rng.pick(CONFIG.roads);
+    const dir = rng.chance(0.5) ? 1 : -1;
+    const along = rng.range(-180, 180);
+    const car = makeCar({
+      x: vertical ? road + 2.5 * dir : along,
+      z: vertical ? along : road + 2.5 * dir,
+      heading: vertical ? (dir > 0 ? 0 : Math.PI) : (dir > 0 ? Math.PI / 2 : -Math.PI / 2),
+      colorIndex: rng.int(0, 9),
+      trafficAxis: vertical ? 'z' : 'x',
+      trafficDir: dir,
+      trafficLane: 2.5 * dir,
+      cruise: rng.range(7, 12),
+    });
+    cars.push(car);
+    group.add(car.mesh);
+    syncCarMesh(car);
+  }
+
+  // Pedestrians wander the sidewalks beside the roads.
+  for (let i = 0; i < CONFIG.traffic.pedestrians; i++) {
+    const road = rng.pick(CONFIG.roads);
+    const vertical = rng.chance(0.5);
+    const mesh = makePedestrianMesh(rng);
+    const ped = {
+      x: vertical ? road + (rng.chance(0.5) ? 9 : -9) : rng.range(-180, 180),
+      z: vertical ? rng.range(-180, 180) : road + (rng.chance(0.5) ? 9 : -9),
+      heading: rng.range(0, Math.PI * 2),
+      speed: rng.range(1.2, 2.2),
+      mesh,
+      alive: true,
+      wander: rng.range(2, 6),
+      targetHeading: 0,
+    };
+    peds.push(ped);
+    group.add(mesh);
+    mesh.position.set(ped.x, 0.3, ped.z);
+  }
+
+  function nearestParked(x, z, maxDist) {
+    let best = null;
+    let bestD = maxDist;
+    for (const car of cars) {
+      if (!car.parked) continue;
+      const d = Math.hypot(car.x - x, car.z - z);
+      if (d < bestD) {
+        bestD = d;
+        best = car;
       }
     }
+    return best;
   }
+
+  function update(dt) {
+    // Moving traffic: cruise along its road; at an intersection, sometimes
+    // turn onto the crossing road. Parked and player cars never move here.
+    for (const car of cars) {
+      if (car.parked || car.isPolice || car === G.player.car) continue;
+      if (!car.trafficAxis) continue;
+      const speed = car.cruise;
+      if (car.trafficAxis === 'z') {
+        car.z += car.trafficDir * speed * dt;
+        if (car.z > 195) car.z = -195;
+        if (car.z < -195) car.z = 195;
+        const near = CONFIG.roads.find((r) => Math.abs(car.z - r) < 1.2);
+        if (near !== undefined && rng.chance(0.004)) {
+          car.trafficAxis = 'x';
+          car.trafficDir = rng.chance(0.5) ? 1 : -1;
+          car.heading = car.trafficDir > 0 ? Math.PI / 2 : -Math.PI / 2;
+          car.z = near + car.trafficLane;
+        }
+      } else {
+        car.x += car.trafficDir * speed * dt;
+        if (car.x > 195) car.x = -195;
+        if (car.x < -195) car.x = 195;
+        const near = CONFIG.roads.find((r) => Math.abs(car.x - r) < 1.2);
+        if (near !== undefined && rng.chance(0.004)) {
+          car.trafficAxis = 'z';
+          car.trafficDir = rng.chance(0.5) ? 1 : -1;
+          car.heading = car.trafficDir > 0 ? 0 : Math.PI;
+          car.x = near + car.trafficLane;
+        }
+      }
+      syncCarMesh(car);
+    }
+
+    // Pedestrians: stroll, turn at random, keep to the pavements.
+    for (const ped of peds) {
+      if (!ped.alive) continue;
+      ped.wander -= dt;
+      if (ped.wander <= 0) {
+        ped.wander = rng.range(2, 6);
+        ped.targetHeading = ped.heading + rng.range(-1.2, 1.2);
+      }
+      let dh = ped.targetHeading - ped.heading;
+      while (dh > Math.PI) dh -= Math.PI * 2;
+      while (dh < -Math.PI) dh += Math.PI * 2;
+      ped.heading += Math.max(-1.6 * dt, Math.min(1.6 * dt, dh));
+      const nx = ped.x + Math.sin(ped.heading) * ped.speed * dt;
+      const nz = ped.z + Math.cos(ped.heading) * ped.speed * dt;
+      if (Math.abs(nx) < 196 && Math.abs(nz) < 196 && !G.world.collidesCircle(nx, nz, 0.5)) {
+        ped.x = nx;
+        ped.z = nz;
+      } else {
+        ped.targetHeading = ped.heading + Math.PI;
+      }
+      ped.mesh.position.set(ped.x, 0.3, ped.z);
+      ped.mesh.rotation.y = ped.heading;
+    }
+  }
+
+  return { cars, peds, nearestParked, update, taxiSpot: TAXI_SPOT };
 }

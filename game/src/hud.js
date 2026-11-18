@@ -1,127 +1,133 @@
-// The HUD: cash, health, ammo, wanted stars, speed, the current objective,
-// a message feed, a damage flash, and a live minimap drawn on a 2D canvas.
-import { CITY, PALETTE } from './config.js';
+// HUD. One job: everything drawn over the 3D view — cash, health, wanted
+// stars, mission objective, speed, ammo, toasts, the damage flash, and the
+// live minimap of Solmar Bay.
+import { CONFIG } from './config.js';
 
-export function createHud() {
+export function createHud(G) {
   const el = (id) => document.getElementById(id);
-  const hud = {
-    cash: el('hud-cash'),
-    healthFill: el('hud-health-fill'),
-    healthText: el('hud-health-text'),
-    ammo: el('hud-ammo'),
-    stars: el('hud-stars'),
-    speed: el('hud-speed'),
-    objective: el('hud-objective'),
-    message: el('hud-message'),
-    minimap: el('minimap'),
-    flash: el('damage-flash'),
-    mapCtx: el('minimap').getContext('2d'),
-    messageTimer: 0,
-    lastMessage: '',
-  };
-  return hud;
-}
+  const cashEl = el('cash');
+  const healthFill = el('health-fill');
+  const healthText = el('health-text');
+  const starsEl = el('stars');
+  const objectiveEl = el('objective-text');
+  const speedEl = el('speed');
+  const ammoEl = el('ammo');
+  const toastEl = el('toast');
+  const hintEl = el('hint');
+  const vignette = el('damage-vignette');
+  const minimap = el('minimap');
+  const mm = minimap.getContext('2d');
 
-export function say(G, text) {
-  const h = G.hud;
-  h.message.textContent = text;
-  h.message.classList.remove('hidden');
-  h.messageTimer = 4;
-  h.lastMessage = text;
-  const status = document.getElementById('status');
-  if (status) status.textContent = text;
-}
+  let toastTimer = 0;
+  let vignetteTimer = 0;
 
-export function setObjective(G, text) {
-  G.hud.objective.textContent = text;
-}
+  function toast(text, seconds = 4) {
+    toastEl.textContent = text;
+    toastEl.classList.remove('hidden');
+    toastTimer = seconds;
+  }
 
-export function flashDamage(G) {
-  const h = G.hud;
-  h.flash.classList.remove('hidden');
-  window.setTimeout(() => h.flash.classList.add('hidden'), 180);
-}
+  function flashDamage() {
+    vignette.classList.remove('hidden');
+    vignetteTimer = 0.5;
+  }
 
-function drawMinimap(G) {
-  const h = G.hud;
-  const ctx = h.mapCtx;
-  const S = 180;
-  const scale = S / (CITY.half * 2 + 120);
-  const toMap = (x, z) => [(x + CITY.half + 60) * scale, (z + CITY.half + 60) * scale];
-  ctx.fillStyle = '#10151c';
-  ctx.fillRect(0, 0, S, S);
-  // Sea and sand on the east edge.
-  const [bx] = toMap(CITY.beachX, 0);
-  ctx.fillStyle = '#c9a86a';
-  ctx.fillRect(bx, 0, S - bx, S);
-  const [wx] = toMap(CITY.waterX, 0);
-  ctx.fillStyle = '#2e7fa8';
-  ctx.fillRect(wx, 0, S - wx, S);
-  // Roads.
-  ctx.strokeStyle = '#5a636e';
-  ctx.lineWidth = 3;
-  for (const c of CITY.roads) {
-    const [x1, y1] = toMap(c, -CITY.half - 60);
-    const [x2, y2] = toMap(c, CITY.half + 60);
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-    const [hx1, hy1] = toMap(-CITY.half - 60, c);
-    const [hx2, hy2] = toMap(CITY.half + 60, c);
-    ctx.beginPath(); ctx.moveTo(hx1, hy1); ctx.lineTo(hx2, hy2); ctx.stroke();
+  function drawMinimap() {
+    const W = minimap.width;
+    const H = minimap.height;
+    const scale = W / (CONFIG.worldHalf * 2 + 120);
+    const toX = (x) => (x + CONFIG.worldHalf + 60) * scale;
+    const toY = (z) => (z + CONFIG.worldHalf + 60) * scale;
+    mm.clearRect(0, 0, W, H);
+    // Water west, sand, city slab.
+    mm.fillStyle = '#2a7ab8';
+    mm.fillRect(0, 0, toX(-252), H);
+    mm.fillStyle = '#e8d8a8';
+    mm.fillRect(toX(-252), 0, toX(-200) - toX(-252), H);
+    mm.fillStyle = '#6a6f66';
+    mm.fillRect(toX(-200), 0, W - toX(-200), H);
+    // Roads.
+    mm.strokeStyle = '#3a3f46';
+    mm.lineWidth = Math.max(2, CONFIG.roadWidth * scale);
+    for (const r of CONFIG.roads) {
+      mm.beginPath();
+      mm.moveTo(toX(r), 0);
+      mm.lineTo(toX(r), H);
+      mm.stroke();
+      mm.beginPath();
+      mm.moveTo(0, toY(r));
+      mm.lineTo(W, toY(r));
+      mm.stroke();
+    }
+    // Mission objective blip.
+    const obj = G.missions.objectivePos();
+    if (obj) {
+      const pulse = 3 + Math.sin(G.time * 5) * 1.5;
+      mm.fillStyle = '#ffd23e';
+      mm.beginPath();
+      mm.arc(toX(obj.x), toY(obj.z), pulse + 2, 0, Math.PI * 2);
+      mm.fill();
+    }
+    // Police cars, red.
+    mm.fillStyle = '#ff3b30';
+    for (const car of G.police.cars) {
+      mm.beginPath();
+      mm.arc(toX(car.x), toY(car.z), 3, 0, Math.PI * 2);
+      mm.fill();
+    }
+    // Traffic, dim white dots.
+    mm.fillStyle = 'rgba(255,255,255,0.55)';
+    for (const car of G.traffic.cars) {
+      if (car.parked) continue;
+      mm.fillRect(toX(car.x) - 1, toY(car.z) - 1, 2, 2);
+    }
+    // The player: a white arrow pointing where Rook faces.
+    const px = toX(G.player.x);
+    const py = toY(G.player.z);
+    mm.save();
+    mm.translate(px, py);
+    mm.rotate(Math.PI - G.player.heading);
+    mm.fillStyle = '#ffffff';
+    mm.beginPath();
+    mm.moveTo(0, -6);
+    mm.lineTo(4, 5);
+    mm.lineTo(-4, 5);
+    mm.closePath();
+    mm.fill();
+    mm.restore();
   }
-  // Mission marker.
-  if (G.missions.marker) {
-    const [mx, my] = toMap(G.missions.marker.x, G.missions.marker.z);
-    ctx.fillStyle = '#ffe066';
-    ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }
-  // Police cars.
-  ctx.fillStyle = '#3b82f6';
-  for (const car of G.police.cars) {
-    const [cx, cy] = toMap(car.x, car.z);
-    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
-  }
-  // Traffic.
-  ctx.fillStyle = '#d7dde3';
-  for (const car of G.traffic.cars) {
-    if (car.removed || car.parked) continue;
-    const [cx, cy] = toMap(car.x, car.z);
-    ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3);
-  }
-  // Player arrow, rotated to the heading.
-  const [px, py] = toMap(G.player.x, G.player.z);
-  ctx.save();
-  ctx.translate(px, py);
-  ctx.rotate(Math.atan2(Math.sin(G.player.heading), Math.cos(G.player.heading)));
-  ctx.fillStyle = '#ff5a3c';
-  ctx.beginPath();
-  ctx.moveTo(0, -7);
-  ctx.lineTo(5, 6);
-  ctx.lineTo(-5, 6);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
 
-export function updateHud(G, dt) {
-  const h = G.hud;
-  const p = G.player;
-  h.cash.textContent = `$${p.cash}`;
-  const hp = Math.max(0, Math.round(p.health));
-  h.healthFill.style.width = `${hp}%`;
-  h.healthFill.style.background = hp > 50 ? '#37c978' : hp > 25 ? '#f5a623' : '#e5534b';
-  h.healthText.textContent = `${hp}`;
-  h.ammo.textContent = p.inCar ? '—' : `${p.ammo} / ${p.reserveAmmo}`;
-  const filled = '★'.repeat(G.police.wanted);
-  const empty = '☆'.repeat(5 - G.police.wanted);
-  h.stars.textContent = filled + empty;
-  h.stars.style.color = G.police.wanted > 0 ? PALETTE.star : '#5a636e';
-  h.speed.textContent = p.inCar && p.car ? `${Math.round(Math.abs(p.car.speed) * 3.6)} km/h` : '';
-  if (h.messageTimer > 0) {
-    h.messageTimer -= dt;
-    if (h.messageTimer <= 0) h.message.classList.add('hidden');
+  function update(dt) {
+    if (toastTimer > 0) {
+      toastTimer -= dt;
+      if (toastTimer <= 0) toastEl.classList.add('hidden');
+    }
+    if (vignetteTimer > 0) {
+      vignetteTimer -= dt;
+      if (vignetteTimer <= 0) vignette.classList.add('hidden');
+    }
+
+    cashEl.textContent = `$${G.player.cash.toLocaleString('en-US')}`;
+    const hp = Math.max(0, Math.round(G.player.health));
+    healthFill.style.width = `${hp}%`;
+    healthFill.style.background = hp > 50 ? '#4ad87b' : hp > 25 ? '#e8c832' : '#d84a4a';
+    healthText.textContent = `${hp}`;
+    const wanted = G.police.wanted;
+    starsEl.textContent = '★'.repeat(wanted) + '☆'.repeat(5 - wanted);
+    starsEl.style.color = wanted > 0 ? '#ffd23e' : 'rgba(255,255,255,0.35)';
+    objectiveEl.textContent = G.missions.objectiveText();
+    ammoEl.textContent = `Ammo ${G.player.ammo}`;
+    if (G.player.inCar && G.player.car) {
+      const kmh = Math.abs(G.player.car.speed) * 3.6;
+      speedEl.textContent = `${Math.round(kmh)} km/h`;
+      speedEl.classList.remove('hidden');
+      hintEl.textContent = 'W/S drive · A/D steer · E exit car · Space handbrake';
+    } else {
+      speedEl.classList.add('hidden');
+      hintEl.textContent = 'WASD move · Shift run · Space jump · E enter car · F shoot · P pause · M mute';
+    }
+    drawMinimap();
   }
-  drawMinimap(G);
+
+  return { toast, flashDamage, update };
 }

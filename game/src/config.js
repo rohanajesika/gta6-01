@@ -1,133 +1,131 @@
-// Solmar Bay — every tuning number, colour and story beat in one place.
-// A coastal open-world crime game: on foot and by car, traffic, pedestrians,
-// car theft, a wanted level with police response, three story missions, combat,
-// a HUD with a minimap, a start screen and saving. Original city, names and art.
-import * as THREE from 'three';
+// Solmar Bay — configuration and mission data.
+// One job: every tunable number and every story beat lives here, so the
+// rest of the game reads plain values instead of hiding magic numbers.
 
-export const STEP = 1 / 60;
-export const SAVE_KEY = 'solmar-bay-save-v1';
-export const CITY = {
-  half: 210, // drivable city extent, metres from the centre
-  roadSpacing: 60,
-  roadWidth: 11,
-  roads: [-180, -120, -60, 0, 60, 120, 180],
-  beachX: 216, // sand starts here, east edge
-  waterX: 292, // sea starts here
+export const CONFIG = {
+  // World layout: a 400x400 m coastal city, roads every 40 m.
+  worldHalf: 200,
+  roadSpacing: 40,
+  roadWidth: 12,
+  roads: [-180, -140, -100, -60, -20, 20, 60, 100, 140, 180],
+  // Beach strip west of the city, then open water.
+  beachX: -200,
+  sandFrom: -252,
+  waterFrom: -560,
+
+  // The plaza block at the city centre stays building-free; the taxi waits
+  // there. A 6 m service alley (x in [-9, -3]) stays clear of buildings so
+  // a car driven south from the plaza always has a lane.
+  plazaHalf: 14,
+  alleyMin: -9,
+  alleyMax: -3,
+
+  player: {
+    walkSpeed: 8,
+    runSpeed: 12.5,
+    jumpSpeed: 7.5,
+    gravity: 22,
+    radius: 0.6,
+    maxHealth: 100,
+    startCash: 250,
+    startAmmo: 48,
+    maxAmmo: 120,
+    enterRange: 6,
+    shootRange: 70,
+    shootDamage: 34,
+    shootCooldown: 0.28,
+  },
+
+  car: {
+    accel: 15,
+    brake: 32,
+    maxSpeed: 27,
+    reverseMax: 9,
+    steerRate: 2.1,
+    radius: 1.9,
+    length: 4.4,
+    width: 2.0,
+  },
+
+  traffic: {
+    movingCars: 10,
+    parkedCars: 10,
+    pedestrians: 24,
+    cruiseSpeed: 9,
+  },
+
+  police: {
+    wantedDecaySeconds: 22,
+    maxCops: 6,
+    chaseSpeed: 17.5,
+    spawnDistance: 26,
+    bustHoldSeconds: 1.6,
+    bustTouchDistance: 3.2,
+    ramDamage: 6,
+    ramCooldownSeconds: 1.2,
+  },
+
+  saveKey: 'solmar-bay-save-v1',
+  shotFrames: 25,
 };
 
-export const PLAYER = {
-  walkSpeed: 7,
-  runSpeed: 11,
-  radius: 0.7,
-  maxHealth: 100,
-  startCash: 120,
-  startAmmo: 24,
-  reserveAmmo: 48,
-  enterRange: 8,
-  punchRange: 2.2,
-  punchDamage: 25,
-  bulletDamage: 34,
-};
-
-export const CAR = {
-  accel: 16,
-  brake: 26,
-  reverseAccel: 10,
-  maxSpeed: 34,
-  maxReverse: 9,
-  steer: 1.9,
-  drag: 0.55,
-  handbrakeDrag: 4.2,
-  length: 4.4,
-  width: 1.9,
-};
-
-export const TRAFFIC_COUNT = 10;
-export const PED_COUNT = 14;
-
-export const WANTED = {
-  max: 5,
-  decaySeconds: 22, // one star fades after this long with no new crime
-  bustSeconds: 3, // standing next to a cop car this long gets you busted
-  bustRange: 5,
-  copRamDamage: 6,
-};
-
-export const PALETTE = {
-  sky: 0x8ec9e8,
-  fog: 0x9fc8dd,
-  ground: 0x3a3f45,
-  sidewalk: 0x8d9299,
-  roadLine: 0xf5d76e,
-  sand: 0xe3c98f,
-  water: 0x2e7fa8,
-  pier: 0x8a6b4a,
-  building: [0x9aa7b8, 0xb8a08a, 0x7e8fa3, 0xa89080, 0x6f7f92, 0xc2b49a, 0x8a94a6, 0x5f7086],
-  roof: 0x4a4f57,
-  glass: 0x2c3e50,
-  playerJacket: 0xd9552c,
-  playerPants: 0x2b3440,
-  pedShirts: [0xe74c3c, 0x3498db, 0x2ecc71, 0xf39c12, 0x9b59b6, 0x1abc9c, 0xe67e22, 0xecf0f1],
-  carPaint: [0xc0392b, 0x2980b9, 0x27ae60, 0xf1c40f, 0x8e44ad, 0xe67e22, 0xecf0f1, 0x2c3e50, 0x16a085, 0xd35400],
-  taxiYellow: 0xf7c948,
-  cometRed: 0xd21f2b,
-  policeWhite: 0xf2f3f4,
-  policeBlue: 0x1f4fd8,
-  hudText: '#f4f6f8',
-  hudMuted: '#aab4bf',
-  star: '#ffd23f',
-  objective: '#ffe066',
-};
-
-// Danny Cole owes the Marlin crew $2,400. Three jobs clear the debt.
-export const STORY = {
-  intro:
-    'Danny Cole owes the Marlin crew $2,400. Three jobs and the debt is gone — if the Solmar police do not catch him first.',
-  missions: [
-    {
-      name: 'The Package',
-      brief: 'Pick up the package at the Marina Kiosk, then deliver it to Harbor Pier.',
-      steps: [
-        { text: 'Pick up the package at the Marina Kiosk', at: [-180, -180] },
-        { text: 'Deliver the package to Harbor Pier', at: [268, 180] },
-      ],
-      reward: 500,
-    },
-    {
-      name: 'Borrowed Comet',
-      brief: 'The crew needs a fast car. "Borrow" the red Comet parked on Coral Row and bring it to the garage on Palm Ave.',
-      steps: [
-        { text: 'Steal the red Comet on Coral Row', at: [120, -60], car: 'comet' },
-        { text: 'Drive the Comet to the garage on Palm Ave', at: [-120, 120] },
-      ],
-      reward: 800,
-    },
-    {
-      name: 'The Last Job',
-      brief: 'One last pickup at Harbor Pier. The pier is guarded — deal with the guards, grab the duffel, and bring it home to Danny\'s apartment.',
-      steps: [
-        { text: 'Reach Harbor Pier', at: [268, 180] },
-        { text: 'Deal with the pier guards (3)', at: [268, 180] },
-        { text: 'Grab the duffel and take it to Danny\'s apartment', at: [-60, -120] },
-      ],
-      reward: 2000,
-    },
-  ],
-};
-
-export const CONTROLS = [
-  ['W A S D', 'Move / drive'],
-  ['Mouse drag', 'Look around'],
-  ['Shift', 'Run'],
-  ['E', 'Enter / exit a car (steal it)'],
-  ['F', 'Fire pistol'],
-  ['Left click', 'Punch'],
-  ['R', 'Reload'],
-  ['Space', 'Handbrake (in a car)'],
-  ['P / Esc', 'Pause'],
-  ['M', 'Mute sound'],
+// Story: Rook, a wheelman new to Solmar Bay, runs jobs for Mara Voss, a
+// fixer who works out of the Marina Kiosk. Three jobs, each with its steps;
+// finish the last one and the city is his.
+export const MISSIONS = [
+  {
+    id: 'first-pickup',
+    title: 'First Pickup',
+    briefing:
+      'Mara Voss needs a driver she can trust. Meet her at the Marina Kiosk, south-west corner of the bay, then move her car.',
+    reward: 500,
+    steps: [
+      {
+        objective: 'Meet Mara at the Marina Kiosk',
+        pos: { x: -180, z: -180 },
+        kind: 'goto',
+        radius: 9,
+      },
+      {
+        objective: 'Steal a car and deliver it to Sunset Garage',
+        pos: { x: 180, z: 180 },
+        kind: 'deliver_car',
+        radius: 11,
+      },
+    ],
+  },
+  {
+    id: 'heat-run',
+    title: 'Heat Run',
+    briefing:
+      'The delivery was flagged. Bay PD is on you — three stars and climbing. Lose the heat: get your wanted level to zero.',
+    reward: 800,
+    steps: [
+      {
+        objective: 'Lose the cops — get wanted level to zero',
+        pos: null,
+        kind: 'escape',
+        radius: 0,
+      },
+    ],
+  },
+  {
+    id: 'last-delivery',
+    title: 'The Last Delivery',
+    briefing:
+      'One last package for Mara, to Pier Point on the north-west shore. Bring it in clean and the bay is yours.',
+    reward: 1200,
+    steps: [
+      {
+        objective: 'Deliver the package to Pier Point',
+        pos: { x: -180, z: 180 },
+        kind: 'goto',
+        radius: 9,
+      },
+    ],
+  },
 ];
 
-export function skyColor() {
-  return new THREE.Color(PALETTE.sky);
-}
+export const STORY_COMPLETE_TITLE = 'Story Complete';
+export const STORY_COMPLETE_TEXT =
+  'The package is delivered, Mara is paid, and Solmar Bay is yours. Free roam continues — keep the engine warm.';
