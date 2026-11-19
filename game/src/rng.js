@@ -1,7 +1,7 @@
-// Seeded random numbers. One job: deterministic randomness, so a shot
-// staged with seed=1 always builds the same city, traffic and pedestrians.
-
-// mulberry32 — small, fast, and good enough for city generation.
+// Seeded randomness for Solmar Bay.
+// Every procedural choice in the city, traffic and crowds draws from one
+// mulberry32 stream, so a ?seed= URL reproduces the exact same city —
+// the screenshots and a playtest both see the same streets.
 export function mulberry32(seed) {
   let a = seed >>> 0;
   return function next() {
@@ -13,21 +13,23 @@ export function mulberry32(seed) {
   };
 }
 
-export function makeRng(seed) {
-  const next = mulberry32(seed);
-  return {
-    next,
-    range(min, max) {
-      return min + next() * (max - min);
-    },
-    int(min, max) {
-      return Math.floor(min + next() * (max - min + 1));
-    },
-    pick(list) {
-      return list[Math.floor(next() * list.length)];
-    },
-    chance(p) {
-      return next() < p;
-    },
-  };
+// Read ?seed= from the page URL; fall back to a fresh random seed so a
+// normal play session is never the same city twice in a row.
+export function seedFromUrl() {
+  const raw = new URLSearchParams(window.location.search).get('seed');
+  const n = raw === null ? NaN : parseInt(raw, 10);
+  if (Number.isFinite(n)) return n >>> 0;
+  return (Math.random() * 0xffffffff) >>> 0;
+}
+
+export function pick(rng, list) {
+  return list[Math.floor(rng() * list.length)];
+}
+
+export function range(rng, min, max) {
+  return min + rng() * (max - min);
+}
+
+export function intRange(rng, min, max) {
+  return min + Math.floor(rng() * (max - min + 1));
 }

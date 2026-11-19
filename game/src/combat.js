@@ -1,112 +1,141 @@
-// Combat. One job: the pistol — fire, tracer, hit, and the consequences.
-// Shooting is hitscan from the camera through the crosshair.
+// Combat and the wanted system: shooting, punching, busted/wasted,
+// and the heat that brings the Bay Police down on the player.
 import * as THREE from 'three';
-import { CONFIG } from './config.js';
+import { CFG } from './config.js';
+import { addWanted, setMessage } from './state.js';
 
-export function createCombat(G) {
-  let cooldown = 0;
-  let lastWantedShotAt = -99;
-  const tracerMat = new THREE.MeshBasicMaterial({ color: 0xffe9a8 });
-  const tracerGeo = new THREE.BoxGeometry(0.06, 0.06, 1);
-  const tracers = [];
-
-  function muzzleWorldPos() {
-    const p = G.player;
-    return new THREE.Vector3(
-      p.x + Math.sin(p.heading) * 0.8,
-      1.4,
-      p.z + Math.cos(p.heading) * 0.8,
-    );
+// Fire the pistol from the camera through the crosshair. Raycasts
+// against pedestrians, rival attackers and police cars; a hit on a
+// bystander is a crime, a hit on a rival is mission progress.
+export function shoot(state, scene, camera, peds, rivals, policeCars, trafficCars, onShot) {
+  if (state.ammo <= 0) {
+    setMessage(state, 'Out of ammo — find the ammo crate at the marina office', 3);
+    if (onShot) onShot(null, 'empty');
+    return null;
   }
+  state.ammo -= 1;
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(0, 0), camera);
+  ray.far = CFG.PISTOL_RANGE;
 
-  function shoot() {
-    if (G.player.inCar) return;
-    if (cooldown > 0) return;
-    if (G.player.ammo <= 0) {
-      G.hud.toast('Out of ammo — finish a mission to restock');
-      G.audio.click();
-      return;
-    }
-    cooldown = CONFIG.player.shootCooldown;
-    G.player.ammo -= 1;
-    G.audio.shot();
-    G.effects.muzzle(muzzleWorldPos(), G.player.heading);
-
-    // Aim from the camera through the centre of the screen.
-    const origin = new THREE.Vector3();
-    G.camera.getWorldPosition(origin);
-    const dir = new THREE.Vector3();
-    G.camera.getWorldDirection(dir);
-    const range = CONFIG.player.shootRange;
-
-    // Find the closest thing the shot can hit: a pedestrian, a cop car,
-    // a traffic car, or a building (which just eats the bullet).
-    let bestT = range;
-    let bestKind = null;
-    let bestTarget = null;
-    const ray = new THREE.Ray(origin, dir);
-    const hitPoint = new THREE.Vector3();
-    function testSphere(cx, cy, cz, r, kind, target) {
-      const c = new THREE.Vector3(cx, cy, cz);
-      const t = ray.distanceToPoint(c);
-      if (t < 0 || t > bestT) return;
-      // Perpendicular distance from the ray to the centre.
-      const closest = new THREE.Vector3().copy(dir).multiplyScalar(t).add(origin);
-      if (closest.distanceTo(c) > r + 0.4) return;
-      bestT = t;
-      bestKind = kind;
-      bestTarget = target;
-      hitPoint.copy(closest);
-    }
-    for (const ped of G.traffic.peds) {
-      if (ped.alive) testSphere(ped.x, 1.1, ped.z, 0.7, 'ped', ped);
-    }
-    for (const car of G.police.cars) testSphere(car.x, 1.0, car.z, 2.2, 'cop', car);
-    for (const car of G.traffic.cars) {
-      if (car.parked || car === G.player.car) continue;
-      testSphere(car.x, 1.0, car.z, 2.2, 'car', car);
-    }
-    const end = new THREE.Vector3().copy(dir).multiplyScalar(bestT).add(origin);
-    const tracer = new THREE.Mesh(tracerGeo, tracerMat);
-    const mid = new THREE.Vector3().addVectors(origin, end).multiplyScalar(0.5);
-    tracer.position.copy(mid);
-    tracer.lookAt(end);
-    tracer.scale.z = Math.max(0.1, bestT);
-    G.scene.add(tracer);
-    tracers.push({ mesh: tracer, life: 0.09 });
-
-    if (bestKind === 'ped') {
-      const ped = bestTarget;
-      ped.alive = false;
-      ped.mesh.rotation.x = -Math.PI / 2;
-      ped.mesh.position.y = 0.5;
-      G.effects.burst(ped.x, 0.8, ped.z, 0xd84a4a, 12);
-      G.police.addWanted(1, 'shot a pedestrian');
-    } else if (bestKind === 'cop') {
-      G.effects.burst(bestTarget.x, 1.2, bestTarget.z, 0xffd23e, 10);
-      G.police.addWanted(1, 'shot at police');
-    } else if (bestKind === 'car') {
-      G.effects.burst(bestTarget.x, 1.0, bestTarget.z, 0x9aa0a8, 8);
-    } else {
-      // A miss still draws the heat if the cops hear it recently enough.
-      if (G.time - lastWantedShotAt > 10) {
-        lastWantedShotAt = G.time;
-        if (G.police.wanted > 0) G.police.addWanted(1, 'shots fired');
+  const targets = [];
+  for (const p of peds) targets.push({ mesh: p.mesh, kind: 'ped', ref: p });
+  for (const r of rivals) targets.push({ mesh: r.mesh, kind: 'rival', ref: r });
+  for (const c of policeCars) targets.push({ mesh: c.mesh, kind: 'police', ref: c });
+  for (const c of trafficCars) targets.push({ mesh: c.mesh, kind: 'car', ref: c });
+  const hits = ray.intersectObjects(targets.map((t) => t.mesh), true);
+  let result = null;
+  if (hits.length > 0) {
+    let obj = hits[0].object;
+    while (obj && !targets.some((t) => t.mesh === obj)) obj = obj.parent;
+    const hit = targets.find((t) => t.mesh === obj);
+    if (hit) {
+      result = { kind: hit.kind, point: hits[0].point.clone() };
+      if (hit.kind === 'ped') {
+        hit.ref.flee = true;
+        addWanted(state, 1);
+        setMessage(state, 'You shot a bystander — the police were called', 3);
+      } else if (hit.kind === 'rival') {
+        hit.ref.health -= CFG.PISTOL_DAMAGE;
+        if (hit.ref.health <= 0 && !hit.ref.dead) {
+          hit.ref.dead = true;
+          state.kills += 1;
+          state.defendLeft = Math.max(0, state.defendLeft - 1);
+        }
+      } else if (hit.kind === 'police') {
+        addWanted(state, 1);
+        setMessage(state, 'You fired on the police — wanted level up', 3);
+      } else if (hit.kind === 'car') {
+        hit.ref.health -= CFG.PISTOL_DAMAGE;
       }
     }
   }
+  // Every shot is loud: nearby pedestrians panic, and the noise alone
+  // draws a star when the player is already on the police radar.
+  for (const p of peds) {
+    const d = Math.hypot(p.x - state.playerX, p.z - state.playerZ);
+    if (d < 30) p.panic = 4;
+  }
+  if (onShot) onShot(result, 'shot');
+  return result;
+}
 
-  function update(dt) {
-    if (cooldown > 0) cooldown -= dt;
-    for (let i = tracers.length - 1; i >= 0; i--) {
-      const t = tracers[i];
-      t.life -= dt;
-      if (t.life <= 0) {
-        G.scene.remove(t.mesh);
-        tracers.splice(i, 1);
-      }
+// A punch: short range, no ammo, no noise — but it still counts as a
+// crime when a bystander takes it.
+export function punch(state, player, peds, rivals) {
+  const px = player.x + Math.sin(player.angle) * 1.2;
+  const pz = player.z + Math.cos(player.angle) * 1.2;
+  let hitAny = false;
+  for (const p of peds) {
+    if (Math.hypot(p.x - px, p.z - pz) < CFG.PUNCH_RANGE) {
+      p.panic = 5;
+      addWanted(state, 1);
+      setMessage(state, 'You assaulted a bystander — the police were called', 3);
+      hitAny = true;
     }
   }
+  for (const r of rivals) {
+    if (!r.dead && Math.hypot(r.x - px, r.z - pz) < CFG.PUNCH_RANGE) {
+      r.health -= CFG.PUNCH_DAMAGE;
+      if (r.health <= 0) {
+        r.dead = true;
+        state.kills += 1;
+        state.defendLeft = Math.max(0, state.defendLeft - 1);
+      }
+      hitAny = true;
+    }
+  }
+  return hitAny;
+}
 
-  return { shoot, update };
+// Stealing a car: an occupied traffic car loses its driver (who flees on
+// foot) and the theft raises the wanted level by one star.
+export function stealCar(state, car, peds) {
+  if (car.occupied) {
+    car.occupied = false;
+    const ped = peds.find((p) => Math.hypot(p.x - car.x, p.z - car.z) < 12);
+    if (ped) ped.panic = 8;
+    addWanted(state, 1);
+    state.carsStolen += 1;
+    setMessage(state, 'Car stolen — the owner called the police', 3);
+  } else {
+    state.carsStolen += 1;
+    setMessage(state, 'You took the car', 2);
+  }
+  return car;
+}
+
+// Running someone over with a car is the fastest way to five stars.
+export function checkRunOver(state, car, peds) {
+  for (const p of peds) {
+    if (Math.abs(car.speed) < 4) continue;
+    if (Math.hypot(p.x - car.x, p.z - car.z) < 2.2) {
+      p.panic = 6;
+      // Shove the pedestrian clear of the wheels.
+      p.x += (p.x - car.x) * 0.9 + 2;
+      p.z += (p.z - car.z) * 0.9 + 2;
+      addWanted(state, 1);
+      setMessage(state, 'You ran someone over — wanted level up', 3);
+    }
+  }
+}
+
+// Wanted decay: stay quiet and the heat cools, one star at a time.
+export function updateWanted(state, dt) {
+  if (state.wanted <= 0) return;
+  state.quietTimer += dt;
+  if (state.quietTimer >= CFG.WANTED_DECAY_SECONDS) {
+    state.wanted -= 1;
+    state.quietTimer = 0;
+    if (state.wanted === 0) setMessage(state, 'You lost the police — clean again', 3);
+    else setMessage(state, `Wanted level dropped to ${state.wanted} star${state.wanted > 1 ? 's' : ''}`, 3);
+  }
+}
+
+// An officer on foot who reaches the player busts them: cash lost,
+// a night in the cells, respawn at the cafe with half health.
+export function bustPlayer(state) {
+  state.over = true;
+  state.overReason = 'busted';
+  state.cash = Math.max(0, state.cash - 200);
 }

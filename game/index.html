@@ -4,134 +4,68 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Solmar Bay — Open-World Crime</title>
+<link rel="stylesheet" href="./style.css">
 <script type="importmap">
 { "imports": { "three": "./vendor/three/three.module.min.js" } }
 </script>
-<style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1420;
-    font-family: "Segoe UI", system-ui, sans-serif; color: #f2f2f2; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  .hidden { display: none !important; }
-  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-  .panel { background: rgba(10, 16, 26, 0.62); border: 1px solid rgba(255,255,255,0.18);
-    border-radius: 8px; padding: 8px 12px; }
-  #top-left { position: absolute; top: 14px; left: 14px; min-width: 190px; }
-  #cash { font-size: 26px; font-weight: 700; color: #7dd87d; letter-spacing: 0.5px; }
-  #health-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-  #health-bar { flex: 1; height: 10px; background: rgba(255,255,255,0.18); border-radius: 5px; overflow: hidden; }
-  #health-fill { height: 100%; width: 100%; background: #4ad87b; }
-  #health-text { font-size: 13px; min-width: 26px; text-align: right; }
-  #stars { position: absolute; top: 14px; right: 14px; font-size: 26px; letter-spacing: 4px;
-    text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
-  #objective { position: absolute; left: 50%; bottom: 118px; transform: translateX(-50%);
-    font-size: 15px; white-space: nowrap; }
-  #objective b { color: #ffd23e; }
-  #speed { position: absolute; right: 16px; bottom: 64px; font-size: 26px; font-weight: 700;
-    text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
-  #ammo { position: absolute; right: 16px; bottom: 34px; font-size: 15px; }
-  #hint { position: absolute; left: 14px; bottom: 14px; font-size: 12px; opacity: 0.85; }
-  #toast { position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
-    font-size: 16px; padding: 10px 18px; }
-  #minimap { position: absolute; left: 14px; bottom: 44px; width: 180px; height: 180px;
-    border: 2px solid rgba(255,255,255,0.35); border-radius: 8px; background: #20262c; }
-  #crosshair { position: fixed; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px;
-    border-radius: 50%; background: rgba(255,255,255,0.9); box-shadow: 0 0 4px #000; z-index: 6; pointer-events: none; }
-  #damage-vignette { position: fixed; inset: 0; z-index: 7; pointer-events: none;
-    box-shadow: inset 0 0 90px 30px rgba(200, 20, 20, 0.55); }
-  .overlay { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center;
-    justify-content: center; background: rgba(8, 12, 20, 0.72); }
-  .card { width: min(560px, 92vw); background: #141c2a; border: 1px solid #2c3a52;
-    border-radius: 14px; padding: 28px 32px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
-  .card h1 { margin: 0 0 4px; font-size: 44px; letter-spacing: 2px; color: #ffd23e; }
-  .card h2 { margin: 0 0 12px; font-size: 26px; color: #ffd23e; }
-  .card .tagline { margin: 0 0 16px; font-size: 15px; color: #b8c4d4; }
-  .card p { font-size: 14px; line-height: 1.55; color: #d5dde8; }
-  .card .controls { font-size: 13px; line-height: 1.8; background: #0e1420; border-radius: 8px;
-    padding: 10px 14px; margin: 14px 0; color: #c8d2de; }
-  .card .controls b { color: #fff; }
-  button { pointer-events: auto; display: block; width: 100%; margin-top: 10px; padding: 12px;
-    font-size: 16px; font-weight: 700; color: #10151d; background: #ffd23e; border: none;
-    border-radius: 8px; cursor: pointer; }
-  button:hover { background: #ffe06e; }
-  button.secondary { background: #2c3a52; color: #e8eef6; }
-  button.secondary:hover { background: #3a4c68; }
-  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-</style>
 </head>
 <body>
-<canvas id="game" aria-label="Solmar Bay: an open-world crime game. Drive, steal cars, outrun the police and run jobs for Mara Voss."></canvas>
-<p id="status" role="status" aria-live="polite"></p>
+<div id="app">
+  <canvas id="scene"></canvas>
 
-<div id="hud" class="hidden">
-  <div id="top-left" class="panel">
-    <div id="cash">$250</div>
-    <div id="health-row"><span>HP</span><div id="health-bar"><div id="health-fill"></div></div><span id="health-text">100</span></div>
-  </div>
-  <div id="stars">☆☆☆☆☆</div>
-  <div id="objective" class="panel"><b>Mission</b> <span id="objective-text">Meet Mara at the Marina Kiosk</span></div>
-  <div id="speed" class="hidden">0 km/h</div>
-  <div id="ammo">Ammo 48</div>
-  <canvas id="minimap" width="180" height="180"></canvas>
-  <div id="hint">WASD move · Shift run · Space jump · E enter car · F shoot · P pause · M mute</div>
-  <div id="toast" class="panel hidden"></div>
-</div>
-<div id="crosshair" class="hidden"></div>
-<div id="damage-vignette" class="hidden"></div>
-
-<div id="start-screen" class="overlay">
-  <div class="card">
-    <h1>SOLMAR BAY</h1>
-    <p class="tagline">An open-world crime game. One city, one wheelman, no way back.</p>
-    <p>You are <b>Rook</b>, a driver fresh off the boat in Solmar Bay — a sun-soaked
-    coastal city of beachfront towers, back-alley garages and Bay PD cruisers.
-    Fixer <b>Mara Voss</b> has work for you. Steal cars, lose the heat, run the
-    jobs, and make the bay yours.</p>
-    <div class="controls">
-      <b>WASD</b> move / drive &nbsp;·&nbsp; <b>Mouse drag</b> look around<br>
-      <b>Shift</b> run &nbsp;·&nbsp; <b>Space</b> jump / handbrake<br>
-      <b>E</b> steal &amp; enter car / exit car &nbsp;·&nbsp; <b>F</b> shoot<br>
-      <b>P</b> pause &amp; save &nbsp;·&nbsp; <b>M</b> mute sound
+  <div id="hud">
+    <div id="mission-box">
+      <div id="mission-title">SOLMAR BAY</div>
+      <div id="mission">Talk to Delia to start your first job</div>
     </div>
-    <button id="btn-start">Start new game</button>
-    <button id="btn-continue" class="secondary">Continue saved game</button>
+    <div id="stats">
+      <div id="stars">☆☆☆☆☆</div>
+      <div id="cash">$250</div>
+      <div id="health-bar"><div id="health-fill"></div></div>
+      <div id="ammo-box">Ammo <span id="ammo">12</span></div>
+      <div id="speed-box"><span id="speed"></span></div>
+    </div>
+    <div id="crosshair">+</div>
+    <div id="toast"></div>
+    <canvas id="minimap" width="190" height="190"></canvas>
+    <div id="hint">WASD move · Shift run · E enter car · Click shoot · F punch · M mission · P pause</div>
+  </div>
+
+  <div id="start-screen" class="screen">
+    <div class="panel">
+      <h1>SOLMAR BAY</h1>
+      <p class="tagline">An open-world crime story on the sunny coast</p>
+      <p class="story">Mara Voss came to Solmar Bay with $250 and a borrowed name. Fixer Delia Kross has five jobs — steal, deliver, escape, defend, and one last heist. The city is yours: walk its streets, take any car, and mind the Bay Police.</p>
+      <ul class="controls">
+        <li><b>WASD</b> — move / drive</li>
+        <li><b>Shift</b> — run</li>
+        <li><b>Mouse drag</b> — look around</li>
+        <li><b>E</b> — enter / exit a car</li>
+        <li><b>Click</b> — shoot &nbsp;·&nbsp; <b>F</b> — punch</li>
+        <li><b>M</b> — start the next job &nbsp;·&nbsp; <b>P</b> — pause &nbsp;·&nbsp; <b>S</b> — save</li>
+      </ul>
+      <button id="start-btn" class="big-btn">Start the story</button>
+      <button id="save-btn" class="small-btn">Save progress</button>
+      <p class="fine">A wholly original game. No characters, names, art or music from any commercial game.</p>
+    </div>
+  </div>
+
+  <div id="pause-screen" class="screen" style="display:none">
+    <div class="panel">
+      <h1>Paused</h1>
+      <p class="story">Solmar Bay waits for no one — but it will wait for you.</p>
+      <button id="resume-btn" class="big-btn">Resume</button>
+    </div>
+  </div>
+
+  <div id="over-screen" class="screen" style="display:none">
+    <div class="panel">
+      <h1 id="over-title">Busted</h1>
+      <p class="story" id="over-detail">The Bay Police caught up with you.</p>
+      <button id="restart-btn" class="big-btn">Back to the streets</button>
+    </div>
   </div>
 </div>
-
-<div id="pause-menu" class="overlay hidden">
-  <div class="card">
-    <h2>Paused</h2>
-    <p>Solmar Bay waits for no one — except right now.</p>
-    <button id="btn-resume">Resume</button>
-    <button id="btn-save" class="secondary">Save game</button>
-    <button id="btn-quit" class="secondary">Quit to title</button>
-  </div>
-</div>
-
-<div id="busted-screen" class="overlay hidden">
-  <div class="card">
-    <h2>BUSTED</h2>
-    <p>Bay PD caught up with you on foot. They took a cut of your cash and
-    dropped you back at the plaza. The city is still yours to take.</p>
-    <button id="btn-busted-continue">Back on the streets</button>
-  </div>
-</div>
-
-<div id="wasted-screen" class="overlay hidden">
-  <div class="card">
-    <h2>WASTED</h2>
-    <p>Rook went down. The bay patched him up at the plaza — for a fee.</p>
-    <button id="btn-wasted-continue">Back on the streets</button>
-  </div>
-</div>
-
-<div id="story-screen" class="overlay hidden">
-  <div class="card">
-    <h2 id="story-title">Story Complete</h2>
-    <p id="story-text"></p>
-    <button id="btn-story-continue">Keep playing — free roam</button>
-  </div>
-</div>
-
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

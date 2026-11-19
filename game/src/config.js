@@ -1,131 +1,127 @@
-// Solmar Bay — configuration and mission data.
-// One job: every tunable number and every story beat lives here, so the
-// rest of the game reads plain values instead of hiding magic numbers.
+// Solmar Bay — shared tuning constants for the whole game.
+// One place for every number the other modules agree on, so a balance
+// change never has to be hunted through five files.
+export const CFG = {
+  // City layout: roads run on a square grid, BLOCK apart, ROAD wide.
+  BLOCK: 44,
+  ROAD: 12,
+  ROAD_COUNT: 9, // road centre lines at -176 .. +176
+  CITY_HALF: 198, // playable edge; the beach and sea lie south of it
+  SEA_Z: 216, // the waterline starts here (south edge)
 
-export const CONFIG = {
-  // World layout: a 400x400 m coastal city, roads every 40 m.
-  worldHalf: 200,
-  roadSpacing: 40,
-  roadWidth: 12,
-  roads: [-180, -140, -100, -60, -20, 20, 60, 100, 140, 180],
-  // Beach strip west of the city, then open water.
-  beachX: -200,
-  sandFrom: -252,
-  waterFrom: -560,
+  // Player on foot.
+  WALK_SPEED: 7,
+  RUN_SPEED: 11.5,
+  PLAYER_RADIUS: 0.9,
+  PLAYER_HEALTH: 100,
 
-  // The plaza block at the city centre stays building-free; the taxi waits
-  // there. A 6 m service alley (x in [-9, -3]) stays clear of buildings so
-  // a car driven south from the plaza always has a lane.
-  plazaHalf: 14,
-  alleyMin: -9,
-  alleyMax: -3,
+  // Driving.
+  CAR_ACCEL: 26,
+  CAR_BRAKE: 42,
+  CAR_REVERSE: 12,
+  CAR_MAX_SPEED: 34,
+  CAR_TURN: 1.9,
+  CAR_RADIUS: 1.6,
 
-  player: {
-    walkSpeed: 8,
-    runSpeed: 12.5,
-    jumpSpeed: 7.5,
-    gravity: 22,
-    radius: 0.6,
-    maxHealth: 100,
-    startCash: 250,
-    startAmmo: 48,
-    maxAmmo: 120,
-    enterRange: 6,
-    shootRange: 70,
-    shootDamage: 34,
-    shootCooldown: 0.28,
-  },
+  // Traffic and crowds.
+  TRAFFIC_CARS: 14,
+  PEDESTRIANS: 26,
+  TRAFFIC_SPEED: 9,
 
-  car: {
-    accel: 15,
-    brake: 32,
-    maxSpeed: 27,
-    reverseMax: 9,
-    steerRate: 2.1,
-    radius: 1.9,
-    length: 4.4,
-    width: 2.0,
-  },
+  // Police and wanted level.
+  WANTED_MAX: 5,
+  WANTED_DECAY_SECONDS: 28, // quiet seconds before one star drops
+  POLICE_CARS_PER_STAR: 1,
+  POLICE_TOP_SPEED: 30,
+  BUST_DISTANCE: 2.6, // an officer this close on foot busts the player
 
-  traffic: {
-    movingCars: 10,
-    parkedCars: 10,
-    pedestrians: 24,
-    cruiseSpeed: 9,
-  },
+  // Combat.
+  PISTOL_DAMAGE: 34,
+  PISTOL_AMMO: 12,
+  PISTOL_RANGE: 60,
+  PUNCH_DAMAGE: 12,
+  PUNCH_RANGE: 2.4,
 
-  police: {
-    wantedDecaySeconds: 22,
-    maxCops: 6,
-    chaseSpeed: 17.5,
-    spawnDistance: 26,
-    bustHoldSeconds: 1.6,
-    bustTouchDistance: 3.2,
-    ramDamage: 6,
-    ramCooldownSeconds: 1.2,
-  },
-
-  saveKey: 'solmar-bay-save-v1',
-  shotFrames: 25,
+  // Economy.
+  START_CASH: 250,
+  MISSION_REWARDS: [400, 650, 900, 1200, 2500],
 };
 
-// Story: Rook, a wheelman new to Solmar Bay, runs jobs for Mara Voss, a
-// fixer who works out of the Marina Kiosk. Three jobs, each with its steps;
-// finish the last one and the city is his.
-export const MISSIONS = [
+// Sun-soaked coastal palette: warm sand, pastel towers, teal sea.
+export const PALETTE = {
+  sky: 0x8ec9e8,
+  fog: 0xa8d4e6,
+  sand: 0xe8d3a8,
+  grass: 0x7fae62,
+  asphalt: 0x3a3f46,
+  sidewalk: 0xb9b3a4,
+  sea: 0x1e7f9e,
+  building: [0xf2d8a7, 0xe8a87c, 0xf7ede2, 0xa8c8d8, 0xd8a0a8, 0xc8d8a0, 0xe8c8e0, 0xb8b8d8],
+  car: [0xc0392b, 0x2471a3, 0xf1c40f, 0x1e8449, 0x7d3c98, 0xe67e22, 0xeeeeee, 0x222222, 0x16a085],
+  police: 0x1a2a4a,
+  pedSkin: [0xe8b98a, 0xc98d5f, 0x8a5a3b, 0xf0c8a0],
+  pedShirt: [0xe74c3c, 0x3498db, 0x2ecc71, 0xf39c12, 0x9b59b6, 0x1abc9c, 0xecf0f1, 0x34495e],
+};
+
+// Mission story beats. Positions are world coordinates the mission
+// module turns into markers, objectives and rewards.
+export const MISSION_DEFS = [
   {
-    id: 'first-pickup',
-    title: 'First Pickup',
-    briefing:
-      'Mara Voss needs a driver she can trust. Meet her at the Marina Kiosk, south-west corner of the bay, then move her car.',
-    reward: 500,
+    id: 'm1',
+    title: 'First Wheels',
+    giver: 'Delia Kross',
+    brief: 'Delia needs a ride, fast. Take the parked coupe on Coral Row and bring it to the garage on Palm Court.',
     steps: [
-      {
-        objective: 'Meet Mara at the Marina Kiosk',
-        pos: { x: -180, z: -180 },
-        kind: 'goto',
-        radius: 9,
-      },
-      {
-        objective: 'Steal a car and deliver it to Sunset Garage',
-        pos: { x: 180, z: 180 },
-        kind: 'deliver_car',
-        radius: 11,
-      },
+      { kind: 'goto', label: 'Steal the coupe on Coral Row', x: -88, z: 22 },
+      { kind: 'drive', label: 'Drive the coupe to the Palm Court garage', x: 44, z: -88 },
     ],
   },
   {
-    id: 'heat-run',
-    title: 'Heat Run',
-    briefing:
-      'The delivery was flagged. Bay PD is on you — three stars and climbing. Lose the heat: get your wanted level to zero.',
-    reward: 800,
+    id: 'm2',
+    title: 'Bayfront Pickup',
+    giver: 'Delia Kross',
+    brief: 'A package is waiting at the marina pier. Pick it up on foot and walk it back to Delia at the cafe. Keep it quiet — no heat.',
     steps: [
-      {
-        objective: 'Lose the cops — get wanted level to zero',
-        pos: null,
-        kind: 'escape',
-        radius: 0,
-      },
+      { kind: 'goto', label: 'Collect the package at the marina pier', x: 0, z: 190 },
+      { kind: 'goto', label: 'Deliver the package to Delia at the cafe', x: -44, z: -22 },
     ],
   },
   {
-    id: 'last-delivery',
-    title: 'The Last Delivery',
-    briefing:
-      'One last package for Mara, to Pier Point on the north-west shore. Bring it in clean and the bay is yours.',
-    reward: 1200,
+    id: 'm3',
+    title: 'The Getaway',
+    giver: 'Marco Reyes',
+    brief: 'Marco borrowed the wrong car. The Bay Police are already rolling. Lose them — drop your wanted level to zero.',
     steps: [
-      {
-        objective: 'Deliver the package to Pier Point',
-        pos: { x: -180, z: 180 },
-        kind: 'goto',
-        radius: 9,
-      },
+      { kind: 'escape', label: 'Lose the police — get your wanted level to zero', x: 0, z: 0 },
+    ],
+  },
+  {
+    id: 'm4',
+    title: 'Dockside Deal',
+    giver: 'Delia Kross',
+    brief: 'Rivals are crashing the dockside deal. Hold the pier and drive them off — your pistol is loaded, make it count.',
+    steps: [
+      { kind: 'defend', label: 'Defend the pier — stop 4 rivals', x: 44, z: 176 },
+    ],
+  },
+  {
+    id: 'm5',
+    title: 'Solmar Heist',
+    giver: 'Delia Kross',
+    brief: 'The big one. Grab the vault case from the marina office, then outrun the whole city to the hideout on Coral Row.',
+    steps: [
+      { kind: 'goto', label: 'Grab the vault case at the marina office', x: -44, z: 176 },
+      { kind: 'drive', label: 'Escape to the hideout on Coral Row', x: -88, z: 66 },
     ],
   },
 ];
 
-export const STORY_COMPLETE_TITLE = 'Story Complete';
-export const STORY_COMPLETE_TEXT =
-  'The package is delivered, Mara is paid, and Solmar Bay is yours. Free roam continues — keep the engine warm.';
+// Where the story's named places sit, for the HUD and the minimap.
+export const PLACES = [
+  { name: 'Marina Pier', x: 0, z: 190 },
+  { name: 'Palm Court Garage', x: 44, z: -88 },
+  { name: 'Coral Row', x: -88, z: 22 },
+  { name: 'Cafe Delia', x: -44, z: -22 },
+  { name: 'Hideout', x: -88, z: 66 },
+  { name: 'Solmar Beach', x: 0, z: 210 },
+];

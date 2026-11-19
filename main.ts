@@ -1,16 +1,16 @@
-// Solmar Bay — the entrypoint for make.fun's gta6-01 bounty (Node 22,
-// standard library only). It hands the game in: copies this repository's
-// game/ and screenshots/ to the output directory and writes
-// /output/dossier.json with the kit's vendored library, so the sealed
-// scorer can rebuild the same dossier byte for byte.
+// Solmar Bay — the program that hands the game in.
 //
+// It runs on Node 22 with the standard library only, in a sandbox with
+// no network: it copies game/ and screenshots/ from beside this file
+// into /output (or MAKEFUN_OUTPUT_DIR outside the grader) and writes
+// /output/dossier.json with buildDossier from the kit's vendored
+// make.fun library, exactly as the kit's starter does. Nothing else:
+// no fetching, no code generation, no reading outside this folder.
+//
+// Run it locally the same way the grader does:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-//
-// Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output. The run
-// is deterministic: the same repository always writes the same bytes.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -18,61 +18,46 @@ import { buildDossier } from './vendor/makefun-game.ts';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-// The scorer's own caps for this bounty (reference/gate.json): only
-// text_max_bytes shapes the dossier's bytes; the others refuse an entry
-// the scorer would refuse, so this program fails the same way, early,
-// instead of handing in something the gate would reject. The same
-// numbers appear twice on purpose: once here for this program's own
-// validation, once as a literal at the buildDossier call below, because
-// the gate preflight reads the caps out of that call's literal.
-const CAPS = {
-  text_max_bytes: 163840,
-  screenshots: { max: 4, max_bytes: 262144 },
-  game_max_files: 993,
-  game_max_bytes: 50331648,
-  game_path_max_bytes: 1000,
-};
-
-function fail(message) {
-  throw new Error(`main.ts: ${message}`);
-}
-
-// Validate the inputs before copying anything, so a broken repository
-// fails loudly here instead of producing a half-written output.
-const gameDir = join(here, 'game');
-const indexPath = join(gameDir, 'index.html');
-if (!existsSync(indexPath) || !statSync(indexPath).isFile()) {
-  fail('game/index.html is missing — the game has no entry page');
-}
-const shotsDir = join(here, 'screenshots');
-if (!existsSync(shotsDir) || !statSync(shotsDir).isDirectory()) {
-  fail('screenshots/ is missing — the entry needs 3 or 4 screenshots');
-}
-const shotNames = readdirSync(shotsDir).filter((name) => !name.startsWith('.')).sort();
-if (shotNames.length < 3 || shotNames.length > CAPS.screenshots.max) {
-  fail(`screenshots/ holds ${shotNames.length} images, need 3 or 4`);
-}
-let shotBytes = 0;
-for (const name of shotNames) {
-  const path = join(shotsDir, name);
-  if (!statSync(path).isFile()) fail(`screenshots/${name} is not a regular file`);
-  const size = statSync(path).size;
-  if (size > CAPS.screenshots.max_bytes) {
-    fail(`screenshots/${name} is ${size} bytes, over the 256 KiB cap`);
+// Fail loudly instead of handing in a half-empty output: the game and
+// its screenshots must both be present beside this file.
+for (const needed of ['game', 'screenshots']) {
+  if (!existsSync(join(here, needed))) {
+    throw new Error(`Solmar Bay: missing ${needed}/ beside main.ts — nothing to hand in`);
   }
-  shotBytes += size;
 }
 
-// Start from a clean output: stale files from an earlier run would make
-// two runs of the same repository write different bytes.
-rmSync(join(out, 'game'), { recursive: true, force: true });
-rmSync(join(out, 'screenshots'), { recursive: true, force: true });
-rmSync(join(out, 'dossier.json'), { force: true });
-mkdirSync(out, { recursive: true });
-cpSync(gameDir, join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-cpSync(shotsDir, join(out, 'screenshots'), { recursive: true });
+// Count the files being handed in, so the run summary below reports
+// real numbers instead of assuming the copy worked.
+function countFiles(dir) {
+  let files = 0;
+  let bytes = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const sub = countFiles(path);
+      files += sub.files;
+      bytes += sub.bytes;
+    } else if (entry.isFile()) {
+      files += 1;
+      bytes += statSync(path).size;
+    }
+  }
+  return { files, bytes };
+}
 
+// The whole game, verbatim, and the screenshots of it.
+mkdirSync(out, { recursive: true });
+cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
+mkdirSync(join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(here, 'screenshots'))) {
+  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+}
+
+// The scorer's caps, as the kit's reference gate.json states them: the
+// text cap shapes the dossier's bytes, the rest refuse an entry the
+// scorer would refuse — more than 4 screenshots or one over 256 KiB,
+// more than 993 files in game/ or 48 MiB of game files in all, or a
+// path under game/ over 1000 bytes.
 const dossier = buildDossier(out, {
   text_max_bytes: 163840,
   screenshots: { max: 4, max_bytes: 262144 },
@@ -82,11 +67,12 @@ const dossier = buildDossier(out, {
 });
 writeFileSync(join(out, 'dossier.json'), dossier);
 
-// A short build summary on stdout: what went in, and the dossier's hash,
-// so two runs can be compared without diffing the whole output.
-const gameFiles = readdirSync(join(out, 'game'), { recursive: true });
-const sha = createHash('sha256').update(dossier).digest('hex').slice(0, 16);
+// Report what was actually written, so a silent short copy cannot
+// pass as a successful hand-in.
+const gameCount = countFiles(join(out, 'game'));
+const shotCount = countFiles(join(out, 'screenshots'));
 console.log(
-  `Solmar Bay: ${gameFiles.length} game entries, ${shotNames.length} screenshots ` +
-    `(${shotBytes} bytes), dossier ${dossier.length} bytes sha256:${sha}`,
+  `Solmar Bay handed in: ${gameCount.files} game files (${gameCount.bytes} bytes), `
+  + `${shotCount.files} screenshots (${shotCount.bytes} bytes), `
+  + `dossier.json (${Buffer.byteLength(dossier, 'utf8')} bytes) -> ${out}`,
 );
